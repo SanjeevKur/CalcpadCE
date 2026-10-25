@@ -145,14 +145,15 @@ fn extract_launch_files<I: IntoIterator<Item = String>>(args: I) -> Vec<PathBuf>
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .map(PathBuf::from)
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("cpd") || e.eq_ignore_ascii_case("cpdz"))
-                .unwrap_or(false)
-        })
+        .filter(|p| is_worksheet_path(p))
         .filter(|p| p.exists())
         .collect()
+}
+
+fn is_worksheet_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cpd") || e.eq_ignore_ascii_case("cpdz"))
 }
 
 /// Per-launch shared secret the sidecar requires on every `/api` request, without which any
@@ -1540,6 +1541,18 @@ pub fn run() {
             new_window,
         ])
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                for path in paths.iter().filter(|p| is_worksheet_path(p) && p.is_file()) {
+                    allow_file_and_parent(window.app_handle(), path);
+                    window
+                        .emit_to(
+                            window.label(),
+                            "open-file-request",
+                            path.to_string_lossy().to_string(),
+                        )
+                        .expect("failed to emit dropped file request");
+                }
+            }
             tauri::WindowEvent::Focused(true) => {
                 *window
                     .state::<FocusedWindow>()
