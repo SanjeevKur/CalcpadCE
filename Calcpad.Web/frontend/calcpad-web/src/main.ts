@@ -53,7 +53,7 @@ import { registerFormattingCommands, getParseMode } from './editor/formatting-co
 import { registerFormatDocumentProvider } from './editor/format-document';
 import { setActiveDocumentKeyResolver, getActiveDocumentKey, type EditorBridge } from './editor/bridge';
 import { EditorGroup } from './editor/editor-group';
-import type { TabManager } from './tabs/tab-manager';
+import { UNTITLED_TITLE, type TabManager } from './tabs/tab-manager';
 import { toDisplayLogLevel } from 'calcpad-frontend';
 import type { UiControl, CalcpadLogLevel, DisplayLogLevel, DraftForm } from 'calcpad-frontend';
 import './editor/vscode-variables.css';
@@ -1958,7 +1958,7 @@ async function bootstrap(): Promise<void> {
             const content = g.tabs.getContent(tabId);
             if (content == null) return;
             const filePath = g.tabs.getFilePath(tabId);
-            const title = g.tabs.getTitle(tabId) ?? 'Untitled';
+            const title = g.tabs.getTitle(tabId) ?? UNTITLED_TITLE;
             const filename = filePath ? title : `${title}.cpd`;
             try {
                 await tauriInvoke('draft_write', {
