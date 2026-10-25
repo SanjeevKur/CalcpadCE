@@ -348,7 +348,7 @@ fn draft_list() -> Result<Vec<DraftInfo>, String> {
             size,
         });
     }
-    out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    out.sort_by_key(|d| std::cmp::Reverse(d.saved_at));
     Ok(out)
 }
 
@@ -886,76 +886,79 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     // buffer while scanning for Kestrel's "Now listening on:" marker, and both are type-erased to
     // `Box<dyn AsyncRead + Send + Unpin>` since they are different concrete types.
     use tokio::io::AsyncRead;
-    fn spawn_stream_reader(
-        stream: Box<dyn AsyncRead + Send + Unpin>,
-        label: &'static str,
+    type UrlSender = Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>;
+
+    #[derive(Clone)]
+    struct ReaderContext {
         spawn_started: Instant,
-        tx_url: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>,
+        tx_url: UrlSender,
         app: AppHandle,
         tail: Arc<Mutex<String>>,
         saw_first: Arc<std::sync::atomic::AtomicBool>,
         log_tx: mpsc::Sender<ServerLogLine>,
+    }
+
+    fn spawn_stream_reader(
+        stream: Box<dyn AsyncRead + Send + Unpin>,
+        label: &'static str,
+        ctx: ReaderContext,
     ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if !saw_first.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            eprintln!(
-                                "[sidecar-timing] first stdio byte ({}) after {}ms",
-                                label,
-                                spawn_started.elapsed().as_millis()
-                            );
-                        }
-                        if let Ok(mut t) = tail.lock() {
-                            append_tail(&mut t, &line);
-                            append_tail(&mut t, "\n");
-                        }
-                        // try_send, never send: blocking here is what wedges the sidecar.
-                        let _ = log_tx.try_send(ServerLogLine {
-                            stream: label,
-                            line: line.clone(),
-                        });
-                        if let Some(url) = extract_listening_url(&line) {
-                            let state: State<'_, ServerState> = app.state();
-                            if let Ok(mut g) = state.url.lock() {
-                                *g = Some(url.clone());
-                            }
-                            if let Some(tx) = tx_url.lock().ok().and_then(|mut g| g.take()) {
-                                let _ = tx.send(Ok(url.clone()));
-                            }
-                            let _ = app.emit("server-url", url);
-                        }
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !ctx
+                    .saw_first
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "[sidecar-timing] first stdio byte ({}) after {}ms",
+                        label,
+                        ctx.spawn_started.elapsed().as_millis()
+                    );
+                }
+                if let Ok(mut t) = ctx.tail.lock() {
+                    append_tail(&mut t, &line);
+                    append_tail(&mut t, "\n");
+                }
+                // try_send, never send: blocking here is what wedges the sidecar.
+                let _ = ctx.log_tx.try_send(ServerLogLine {
+                    stream: label,
+                    line: line.clone(),
+                });
+                if let Some(url) = extract_listening_url(&line) {
+                    let state: State<'_, ServerState> = ctx.app.state();
+                    if let Ok(mut g) = state.url.lock() {
+                        *g = Some(url.clone());
                     }
-                    Ok(None) | Err(_) => break,
+                    if let Some(tx) = ctx.tx_url.lock().ok().and_then(|mut g| g.take()) {
+                        let _ = tx.send(Ok(url.clone()));
+                    }
+                    let _ = ctx.app.emit("server-url", url);
                 }
             }
         })
     }
+    let reader_ctx = ReaderContext {
+        spawn_started,
+        tx_url: tx_url.clone(),
+        app: app.clone(),
+        tail: tail.clone(),
+        saw_first: saw_first_output.clone(),
+        log_tx: log_tx.clone(),
+    };
     let mut readers = Vec::new();
     if let Some(s) = stdout {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stdout",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
     if let Some(s) = stderr {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stderr",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
 
