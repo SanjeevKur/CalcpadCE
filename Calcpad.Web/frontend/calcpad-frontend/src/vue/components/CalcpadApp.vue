@@ -119,6 +119,7 @@
         :initial-active-config="activeConfig"
         :initial-available-configs="availableConfigs"
         :initial-editor-font-family="editorFontFamily"
+        :initial-completion-delay-ms="completionDelayMs"
         :initial-available-fonts="availableFonts"
         :initial-user-name="userName"
         :focus-request="settingFocus?.paneId === pane.id ? settingFocus : null"
@@ -151,6 +152,7 @@
         @open-fonts-folder="handleOpenFontsFolder"
         @refresh-fonts="handleRefreshFonts"
         @update-editor-font-family="handleUpdateEditorFontFamily"
+        @update-completion-delay-ms="handleUpdateCompletionDelayMs"
         @update-user-name="handleUpdateUserName"
       />
       <CalcpadVariablesTab
@@ -245,7 +247,7 @@ import type { Tab, InsertItem, Settings, VariablesData, PdfSettings, TocHeading,
 import { DEFAULT_VERSION_CONFIG } from '../types'
 import type { CalcpadError, ExportVariant } from '../../types/api'
 import type { WriteMode } from '../../types/settings'
-import { coerceWriteMode } from '../../types/settings'
+import { coerceWriteMode, DEFAULT_COMPLETION_DELAY_MS } from '../../types/settings'
 import { DEFAULT_PDF_SETTINGS } from '../types'
 import {
   DEFAULT_PREVIEW_SIZE_MB, MIN_PREVIEW_SIZE_MB,
@@ -310,6 +312,7 @@ const maxPreviewConsoleMessages = ref(DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT)
 const activeConfig = ref('default')
 const availableConfigs = ref<string[]>(['default'])
 const editorFontFamily = ref('JuliaMono')
+const completionDelayMs = ref(DEFAULT_COMPLETION_DELAY_MS)
 const availableFonts = ref<string[]>([])
 const variablesData = ref<VariablesData>({
   macros: [],
@@ -714,6 +717,11 @@ const handleUpdateEditorFontFamily = (family: string) => {
   postMessage({ type: 'updateEditorFontFamily', family })
 }
 
+const handleUpdateCompletionDelayMs = (delayMs: number) => {
+  completionDelayMs.value = delayMs
+  postMessage({ type: 'updateCompletionDelayMs', completionDelayMs: delayMs })
+}
+
 const handleUpdateUserName = (value: string) => {
   userName.value = value
   postMessage({ type: 'updateUserName', value })
@@ -862,6 +870,7 @@ const handleMessage = (event: MessageEvent) => {
       if (message.activeConfig) activeConfig.value = message.activeConfig
       if (Array.isArray(message.availableConfigs)) availableConfigs.value = message.availableConfigs
       if (typeof message.editorFontFamily === 'string') editorFontFamily.value = message.editorFontFamily
+      completionDelayMs.value = message.completionDelayMs
       if (Array.isArray(message.availableFonts)) availableFonts.value = message.availableFonts
       if (typeof message.userName === 'string') userName.value = message.userName
       if (typeof message.showFileInfoLine === 'boolean') showFileInfoLine.value = message.showFileInfoLine
@@ -873,6 +882,9 @@ const handleMessage = (event: MessageEvent) => {
       break
     case 'editorFontFamilyChanged':
       if (typeof message.family === 'string') editorFontFamily.value = message.family
+      break
+    case 'completionDelayMsChanged':
+      completionDelayMs.value = message.completionDelayMs
       break
     case 'availableFontsChanged':
       if (Array.isArray(message.availableFonts)) availableFonts.value = message.availableFonts
