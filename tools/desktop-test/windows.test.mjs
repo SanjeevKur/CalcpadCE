@@ -135,7 +135,11 @@ describe('desktop windows', {skip: process.platform !== 'win32', concurrency: fa
         const defaults = await app.geometry(main);
         assert.equal(defaults.maximized, false);
         const position = {x: defaults.position.x + 40, y: defaults.position.y + 40};
-        const changed = await app.setGeometry(main, {width: 1000, height: 700}, position);
+        const changedSize = {width: 560, height: 340};
+        const secondarySize = {width: 600, height: 360};
+        const changed = await app.setGeometry(main, changedSize, position);
+        assert.notDeepEqual(changed.size, defaults.size);
+        assert.notDeepEqual(changed.position, defaults.position);
         await app.stop(main, 'main');
 
         const stateFile = path.join(app.profile, '.window-state.json');
@@ -147,19 +151,19 @@ describe('desktop windows', {skip: process.platform !== 'win32', concurrency: fa
         const second = await app.newWindow(main);
         assert.deepEqual(await app.geometry(second.page), defaults);
 
-        await app.setGeometry(main, {width: 1000, height: 700}, position);
+        await app.setGeometry(main, changedSize, position);
         await app.evaluate(main, invoke('plugin:window|maximize'));
         await until(async () => (await app.geometry(main)).maximized, 'window maximized');
         const third = await app.newWindow(main);
         assert.deepEqual(await app.geometry(third.page), defaults);
 
-        await app.setGeometry(second.page, {width: 1100, height: 750}, position);
+        await app.setGeometry(second.page, secondarySize, position);
         await app.closeAndWait(second.page, second.label);
         const fourth = await app.newWindow(main);
         assert.deepEqual(await app.geometry(fourth.page), defaults);
         await app.closeAndWait(main, 'main');
         await app.closeAndWait(third.page, third.label);
-        await app.setGeometry(fourth.page, {width: 1100, height: 750}, position);
+        await app.setGeometry(fourth.page, secondarySize, position);
         await app.stop(fourth.page, fourth.label);
 
         main = await app.start();

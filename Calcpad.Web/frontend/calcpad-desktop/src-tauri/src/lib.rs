@@ -1498,6 +1498,18 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
 pub fn run() {
     install_panic_hook();
     let context = tauri::generate_context!();
+    #[cfg(all(windows, feature = "window-tests"))]
+    let context = {
+        let mut context = context;
+        let port = std::env::var("CALCPAD_TEST_DEBUG_PORT").expect("test debug port is required");
+        for window in &mut context.config_mut().app.windows {
+            let args = window
+                .additional_browser_args
+                .get_or_insert_with(String::new);
+            args.push_str(&format!(" --remote-debugging-port={port}"));
+        }
+        context
+    };
     #[cfg(windows)]
     allow_existing_instance_foreground(&context.config().identifier);
     tauri::Builder::default()

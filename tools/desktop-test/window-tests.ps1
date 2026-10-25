@@ -22,11 +22,14 @@ if (-not $SkipBuild) {
     } finally { Pop-Location }
 
     $previousConfig = $env:TAURI_CONFIG
+    $window = (Get-Content (Join-Path $Desktop 'src-tauri/tauri.conf.json') -Raw | ConvertFrom-Json).app.windows[0]
+    $window.width = 640
+    $window.height = 400
     $env:TAURI_CONFIG = @{
         identifier = 'org.calcpad-ce.window-tests'
         productName = 'CalcpadCE Window Tests'
         bundle = @{ resources = @() }
-        app = @{ security = @{ capabilities = @(
+        app = @{ windows = @($window); security = @{ capabilities = @(
             'default'
             @{
                 identifier = 'window-tests'
@@ -37,7 +40,7 @@ if (-not $SkipBuild) {
     } | ConvertTo-Json -Depth 8 -Compress
     Push-Location (Join-Path $Desktop 'src-tauri')
     try {
-        cargo rustc --locked --bin calcpad-desktop -- -o (Join-Path $App 'calcpad-window-tests.exe')
+        cargo rustc --locked --features window-tests --bin calcpad-desktop -- -o (Join-Path $App 'calcpad-window-tests.exe')
         if ($LASTEXITCODE -ne 0) { throw 'desktop build failed' }
     } finally {
         Pop-Location

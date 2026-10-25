@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,7 @@ export class TestApp {
     directory = fileURLToPath(new URL('.work/window-tests/', import.meta.url));
     profile = path.resolve(process.env.APPDATA, 'org.calcpad-ce.window-tests');
     executable = path.join(this.directory, 'app/calcpad-window-tests.exe');
+    desktop = process.env.CALCPAD_TEST_DESKTOP ?? 'CalcpadWindowTests';
     runner = null;
     launches = 0;
 
@@ -49,10 +50,18 @@ export class TestApp {
         this.endpoint = `http://127.0.0.1:${this.port}`;
         this.runner = this.launch(args);
         this.exited = once(this.runner, 'exit');
-        await until(async () => {
-            try { return (await fetch(`${this.endpoint}/json`)).ok; }
-            catch { return false; }
-        }, 'debug port');
+        try {
+            await until(async () => {
+                if (this.runner.exitCode !== null || this.runner.signalCode !== null) {
+                    throw new Error(`Application launcher exited: ${this.runner.exitCode ?? this.runner.signalCode}`);
+                }
+                try { return (await fetch(`${this.endpoint}/json`)).ok; }
+                catch { return false; }
+            }, 'debug port');
+        } catch (error) {
+            const log = path.join(this.directory, `launch-${this.launches - 1}.log`);
+            throw new Error(`${error.message}\n${log}\n${existsSync(log) ? readFileSync(log, 'utf8') : 'No application log was created.'}`, {cause: error});
+        }
         const main = await this.window('main');
         await pause(300);
         return main;
@@ -60,10 +69,10 @@ export class TestApp {
 
     launch(args) {
         return spawn(path.join(this.directory, 'helpers/deskrun.exe'), [
-            'CalcpadWindowTests', '180', '--log', path.join(this.directory, `launch-${this.launches++}.log`),
+            this.desktop, '180', '--log', path.join(this.directory, `launch-${this.launches++}.log`),
             '--', this.executable, ...args,
-        ], {cwd: path.dirname(this.executable), windowsHide: true, stdio: 'ignore', env: {
-            ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${this.port}`,
+        ], {cwd: path.dirname(this.executable), windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'], env: {
+            ...process.env, CALCPAD_TEST_DEBUG_PORT: String(this.port),
         }});
     }
 
@@ -151,7 +160,7 @@ export class TestApp {
     async focus(page, label) {
         const title = `Calcpad window test focus: ${label}`;
         await this.evaluate(page, invoke('plugin:window|set_title', {label, value: title}));
-        execFileSync(path.join(this.directory, 'helpers/deskrun.exe'), ['CalcpadWindowTests', 'notify-focus', title], {windowsHide: true});
+        execFileSync(path.join(this.directory, 'helpers/deskrun.exe'), [this.desktop, 'notify-focus', title], {windowsHide: true});
         await pause(100);
     }
 
