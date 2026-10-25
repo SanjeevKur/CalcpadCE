@@ -15,7 +15,9 @@ namespace Calcpad.Core
             private readonly string[] _parameters;
             // Null entry = required
             private readonly string[] _defaults;
+            // Longest first, so a parameter never matches the start of a longer one
             private readonly int[] _order;
+            private readonly char[] _starts;
 
             internal Macro(string contents, List<string> parameters, List<string> defaults)
             {
@@ -25,34 +27,19 @@ namespace Calcpad.Core
                     _parameters = null;
                     _defaults = null;
                     _order = null;
+                    _starts = null;
                 }
                 else
                 {
-                    _parameters = [.. parameters];
+                    string[] p = [.. parameters];
+                    _parameters = p;
                     _defaults = [.. defaults];
-                    _order = Sort(_parameters);
+                    _order = [.. Enumerable.Range(0, p.Length)
+                        .Where(i => p[i].Length > 0)
+                        .OrderByDescending(i => p[i].Length)];
+                    _starts = [.. _order.Select(i => p[i][0]).Distinct()];
                     HasDefaults = Array.Exists(_defaults, d => d is not null);
                 }
-            }
-
-            private static int[] Sort(string[] parameters)
-            {
-                var n = parameters.Length;
-                var sorted = new SortedList<string, int>();
-                for (int i = 0; i < n; ++i)
-                {
-                    var s = new string(parameters[i].Reverse().ToArray());
-                    try
-                    {
-                        sorted.Add(s, i);
-                    }
-                    catch (ArgumentException)
-                    {
-                        throw Exceptions.DuplicateMacroParameters(s);
-
-                    }
-                }
-                return sorted.Values.Reverse().ToArray();
             }
 
             internal int GetParameterIndex(ReadOnlySpan<char> name)
@@ -89,22 +76,45 @@ namespace Calcpad.Core
                 return result;
             }
 
+            // One pass, so inserted arguments are never substituted again
             internal string Run(string[] arguments)
             {
                 if (ParameterCount == 0)
                     return _contents;
 
-                var sb = new StringBuilder(_contents);
-                for (int i = 0, count = _order.Length; i < count; ++i)
+                var body = _contents.AsSpan();
+                var sb = new StringBuilder(body.Length + 64);
+                for (int i = 0, len = body.Length; i < len;)
                 {
-                    var j = _order[i];
+                    var next = body[i..].IndexOfAny(_starts);
+                    if (next < 0)
+                    {
+                        sb.Append(body[i..]);
+                        break;
+                    }
+                    next += i;
+                    sb.Append(body[i..next]);
+                    var j = MatchParameter(body[next..]);
+                    if (j < 0)
+                    {
+                        sb.Append(body[next]);
+                        i = next + 1;
+                        continue;
+                    }
                     var s = arguments[j];
-                    if (s.Length > 1 && s[0] == ' ')
-                        sb.Replace(_parameters[j], s[1..]);
-                    else
-                        sb.Replace(_parameters[j], s);
+                    sb.Append(s.Length > 1 && s[0] == ' ' ? s.AsSpan(1) : s);
+                    i = next + _parameters[j].Length;
                 }
                 return sb.ToString();
+            }
+
+            private int MatchParameter(ReadOnlySpan<char> s)
+            {
+                foreach (var j in _order)
+                    if (s.StartsWith(_parameters[j], StringComparison.Ordinal))
+                        return j;
+
+                return -1;
             }
             internal bool IsEmpty => _contents is null;
             internal int ParameterCount => _parameters?.Length ?? 0;
@@ -198,6 +208,7 @@ namespace Calcpad.Core
             var macroName = string.Empty;
             var lineNumber = includeLine;
             var macroDefCount = 0;
+            var defLine = -1;
             var hasErrors = false;
             ReadOnlySpan<char> lineContent = "code";
             List<string> macroParameters = null;
@@ -249,8 +260,16 @@ namespace Calcpad.Core
 
                 if (macroDefCount > 0)
                 {
-                    sb.Append(Messages.Macro_definition_block_not_closed_Missing_end_def);
+                    var message = Messages.Macro_definition_block_not_closed_Missing_end_def;
+                    sb.Append(message);
                     hasErrors = true;
+                    _errorList.Add(new CalcpadError
+                    {
+                        SourceLine = defLine,
+                        OutputLine = _parsedLineNumber + 1,
+                        Message = message,
+                        Source = CalcpadErrorSource.Macro,
+                    });
                 }
             }
             catch (Exception ex)
@@ -307,10 +326,11 @@ namespace Calcpad.Core
 
             void ParseInclude(ReadOnlySpan<char> lineContent)
             {
-                if (lineContent.Length <= IncludeKeyword.Length)
+                if (!TryGetIncludePath(lineContent, out var start, out var length))
+                {
                     AppendError(lineContent, Messages.Missing_source_file_for_include);
-
-                TryGetIncludePath(lineContent, out var start, out var length);
+                    return;
+                }
                 var rawFileName = lineContent.Slice(start, length).ToString();
                 var nf1 = lineContent.LastIndexOf('#');
 
@@ -371,117 +391,143 @@ namespace Calcpad.Core
 
             void ParseDef(ReadOnlySpan<char> lineContent)
             {
-                var textSpan = new TextSpan(lineContent);
-                if (macroDefCount == 0)
+                if (macroDefCount > 0)
                 {
-                    int i = DefKeyword.Length, len = lineContent.Length;
-                    var c = EatSpace(lineContent, ref i);
+                    AppendError(lineContent, Messages.Invalid_inside_macro_definition);
+                    if (!IsInlineDef(lineContent))
+                        ++macroDefCount;
+
+                    return;
+                }
+                var textSpan = new TextSpan(lineContent);
+                int i = DefKeyword.Length, len = lineContent.Length;
+                var c = EatSpace(lineContent, ref i);
+                textSpan.Reset(i);
+                while (i < len)
+                {
+                    c = lineContent[i];
+                    if (c == '$')
+                    {
+                        textSpan.Expand();
+                        macroName = textSpan.ToString();
+                        break;
+                    }
+                    if (!Validator.IsMacroLetter(c, textSpan.Length))
+                        break;
+
+                    textSpan.Expand();
+                    ++i;
+                }
+                if (macroName.Length == 0)
+                {
+                    InvalidMacroName(lineContent, textSpan, i);
+                    if (!IsInlineDef(lineContent))
+                        OpenDef();
+
+                    return;
+                }
+                c = EatSpace(lineContent, ref i);
+                if (c == '(')
+                {
+                    macroParameters = [];
+                    macroDefaults = [];
+                    var seenOptional = false;
+                    c = EatSpace(lineContent, ref i);
                     textSpan.Reset(i);
                     while (i < len)
                     {
                         c = lineContent[i];
+                        if (c == ' ')
+                        {
+                            if ((c = EatSpace(lineContent, ref i)) == '\0')
+                                break;
+
+                            continue;
+                        }
+                        string defaultValue = null;
                         if (c == '$')
                         {
                             textSpan.Expand();
-                            macroName = textSpan.ToString();
-                            break;
+                            c = EatSpace(lineContent, ref i);
+                            if (c == '=')
+                            {
+                                EatSpace(lineContent, ref i);
+                                var end = MathParser.IndexOfTopLevel(lineContent[i..], ';');
+                                if (end < 0)
+                                    end = len - i;
+
+                                defaultValue = lineContent.Slice(i, end).Trim().ToString();
+                                i += end;
+                                c = i < len ? lineContent[i] : '\0';
+                            }
                         }
-                        if (Validator.IsMacroLetter(c, textSpan.Length))
-                            textSpan.Expand();
+                        else if (c != ';' && c != ')')
+                        {
+                            if (Validator.IsMacroLetter(c, textSpan.Length))
+                                textSpan.Expand();
+                            else if (c != '\n')
+                                SymbolError(lineContent, c);
+
+                            if (++i == len)
+                            {
+                                c = '\0';
+                                break;
+                            }
+                            continue;
+                        }
+                        var parameterName = textSpan.ToString();
+                        if (defaultValue is not null)
+                            seenOptional = true;
+                        else if (seenOptional)
+                            AppendError(lineContent, string.Format(Messages.Required_parameter_after_optional_0, parameterName));
+
+                        if (macroParameters.Contains(parameterName))
+                            AppendError(lineContent, string.Format(Messages.Duplicate_macro_parameter_names_0_and_1, parameterName, parameterName));
                         else
                         {
-                            SymbolError(lineContent, c);
-                            break;
-                        }
-                        ++i;
-                    }
-                    c = EatSpace(lineContent, ref i);
-                    if (c == '(')
-                    {
-                        macroParameters = [];
-                        macroDefaults = [];
-                        var seenOptional = false;
-                        c = EatSpace(lineContent, ref i);
-                        textSpan.Reset(i);
-                        while (i < len)
-                        {
-                            c = lineContent[i];
-                            if (c == ' ')
-                            {
-                                c = EatSpace(lineContent, ref i);
-                                continue;
-                            }
-                            string defaultValue = null;
-                            if (c == '$')
-                            {
-                                textSpan.Expand();
-                                c = EatSpace(lineContent, ref i);
-                                if (c == '=')
-                                {
-                                    EatSpace(lineContent, ref i);
-                                    var end = MathParser.IndexOfTopLevel(lineContent[i..], ';');
-                                    if (end < 0)
-                                        end = len - i;
-
-                                    defaultValue = lineContent.Slice(i, end).Trim().ToString();
-                                    i += end;
-                                    c = i < len ? lineContent[i] : '\0';
-                                }
-                            }
-                            else if (c != ';' && c != ')')
-                            {
-                                if (Validator.IsMacroLetter(c, textSpan.Length))
-                                    textSpan.Expand();
-                                else if (c != '\n')
-                                    SymbolError(lineContent, c);
-
-                                c = lineContent[++i];
-                                continue;
-                            }
-                            var parameterName = textSpan.ToString();
-                            if (defaultValue is not null)
-                                seenOptional = true;
-                            else if (seenOptional)
-                                throw Exceptions.RequiredParameterAfterOptional(parameterName);
-
                             macroParameters.Add(parameterName);
                             macroDefaults.Add(defaultValue);
-                            if (c == ')')
-                                break;
-
-                            c = EatSpace(lineContent, ref i);
-                            textSpan.Reset(i);
                         }
-                        c = EatSpace(lineContent, ref i);
-                    }
-                    else
-                        macroParameters = null;
+                        if (c == ')')
+                            break;
 
-                    if (c == '=')
-                    {
-                        c = EatSpace(lineContent, ref i);
-                        AddMacro(lineContent, macroName, new Macro(lineContent[i..].ToString(), macroParameters, macroDefaults));
-                        macroName = string.Empty;
-                        macroDefaults = null;
-                    }
-                    else
-                    {
-                        if (string.IsNullOrWhiteSpace(macroName))
-                        {
-                            macroName = textSpan.ToString();
-                            AppendError(lineContent, string.Format(Messages.Invalid_macro_name_0, macroName));
+                        if ((c = EatSpace(lineContent, ref i)) == '\0')
+                            break;
 
-                            macroName = string.Empty;
-                            textSpan.Reset(i);
-                        }
-                        ++macroDefCount;
+                        textSpan.Reset(i);
                     }
+                    if (c != ')')
+                        AppendError(lineContent, Messages.Brackets_not_closed);
+
+                    c = EatSpace(lineContent, ref i);
                 }
                 else
+                    macroParameters = null;
+
+                if (c == '=')
                 {
-                    AppendError(lineContent, Messages.Invalid_inside_macro_definition);
-                    ++macroDefCount;
+                    c = EatSpace(lineContent, ref i);
+                    AddMacro(lineContent, macroName, new Macro(lineContent[i..].ToString(), macroParameters, macroDefaults));
+                    macroName = string.Empty;
+                    macroDefaults = null;
                 }
+                else
+                    OpenDef();
+            }
+
+            void OpenDef()
+            {
+                defLine = lineNumber;
+                ++macroDefCount;
+            }
+
+            void InvalidMacroName(ReadOnlySpan<char> lineContent, TextSpan name, int i)
+            {
+                var c = i < lineContent.Length ? lineContent[i] : '\0';
+                if (c is not ('\0' or ' ' or '(' or '='))
+                    SymbolError(lineContent, c);
+                else
+                    AppendError(lineContent, string.Format(Messages.Invalid_macro_name_0, name.ToString()));
             }
 
             void ParseEndDef(ReadOnlySpan<char> lineContent)
@@ -489,17 +535,18 @@ namespace Calcpad.Core
                 if (macroDefCount < 1)
                 {
                     AppendError(lineContent, Messages.There_is_no_matching_def);
+                    return;
                 }
-                else
-                {
-                    macroBuilder.RemoveLastLineIfEmpty();
-                    var macroContent = macroBuilder.ToString();
-                    AddMacro(lineContent, macroName, new Macro(macroContent, macroParameters, macroDefaults));
-                    macroName = string.Empty;
-                    macroDefaults = null;
-                    macroBuilder.Clear();
-                }
-                --macroDefCount;
+                if (--macroDefCount > 0)
+                    return;
+
+                macroBuilder.RemoveLastLineIfEmpty();
+                if (macroName.Length > 0)
+                    AddMacro(lineContent, macroName, new Macro(macroBuilder.ToString(), macroParameters, macroDefaults));
+
+                macroName = string.Empty;
+                macroDefaults = null;
+                macroBuilder.Clear();
             }
 
             void AppendLine(ReadOnlySpan<char> line)
@@ -731,6 +778,8 @@ namespace Calcpad.Core
             return false;
         }
 
+
+        private static bool IsInlineDef(ReadOnlySpan<char> s) => s[(s.IndexOf(')') + 1)..].Contains('=');
 
         private static char EatSpace(ReadOnlySpan<char> s, ref int index)
         {
