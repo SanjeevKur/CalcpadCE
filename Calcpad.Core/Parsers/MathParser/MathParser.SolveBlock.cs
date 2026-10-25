@@ -539,12 +539,15 @@ namespace Calcpad.Core
                     }
                     throw;
                 }
+                finally
+                {
+                    --_parser._isSolver;
+                }
                 if (_type == SolverTypes.Sup || _type == SolverTypes.Inf)
                 {
                     var s = _items[1].Input + (_type == SolverTypes.Sup ? "_sup" : "_inf");
                     _parser.SetVariable(s, (RealValue)_var.Value);
                 }
-                --_parser._isSolver;
 
                 if (double.IsNaN(d) && !_parser.IsPlotting)
                     throw Exceptions.NoSolution(ToString());
