@@ -362,16 +362,16 @@
         <value>Повтарящо се име на макрос: "{0}".</value>
     </data>
   <data name="Missing_delimiter_0_in_plot_command" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Липсва разделител "{0}" в команда за графика "{1}".&lt;/span&gt;</value>
+        <value>Липсва разделител "{0}" в команда за графика "{1}".</value>
     </data>
   <data name="Missing_0_in_plot_command_1" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Липсва {0} в команда за графика "{1}".&lt;/span&gt;.</value>
+        <value>Липсва {0} в команда за графика "{1}".</value>
     </data>
   <data name="More_than_one_delimiter_in_plot_command" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Разделителите "|" са повече от един в команда за графика {0}.&lt;/span&gt;</value>
+        <value>Разделителите "|" са повече от един в команда за графика {0}.</value>
     </data>
   <data name="Missing_delimiter_0_in_surface_map_command_1" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Липсва разделител "{0}" в команда за 2D графика "{1}".&lt;/span&gt;</value>
+        <value>Липсва разделител "{0}" в команда за 2D графика "{1}".</value>
     </data>
   <data name="Function_redefined" xml:space="preserve">
         <value> Внимание! Функцията е предефинирана.</value>
