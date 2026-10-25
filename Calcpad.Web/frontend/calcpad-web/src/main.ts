@@ -7,7 +7,7 @@ import { discardMetadataDraft } from 'calcpad-frontend/vue/metadata-drafts';
 import { MessageBridge } from './services/message-bridge';
 import type { TauriServerManager } from './services/server-manager';
 import { WorkspaceStateStore, isResultMode, type ResultMode, type WorkspaceLayout } from './services/workspace-state';
-import { buildApiSettings } from 'calcpad-frontend/types/settings';
+import { buildApiSettings, DEFAULT_COMPLETION_DELAY_MS } from 'calcpad-frontend/types/settings';
 import { ConnectionMonitor, setLogLevel, coerceLogLevel, stripCpdSnippetWrapper } from 'calcpad-frontend';
 import {
     findMetadataCommentBlock,
@@ -326,6 +326,7 @@ async function bootstrap(): Promise<void> {
     const initialWordWrap: 'on' | 'off' =
         localStorage.getItem(WORD_WRAP_KEY) === 'off' ? 'off' : 'on';
     const initialEditorFontFamily = (activeBridge as unknown as EditorBridge).getExtraSetting('editorFontFamily') ?? 'JuliaMono';
+    let completionDelayMs = Number(activeBridge.getExtraSetting('completionDelayMs') ?? DEFAULT_COMPLETION_DELAY_MS);
 
     // ---- Editor groups ----
     // The desktop supports a single top/bottom split into two editor groups.
@@ -364,6 +365,14 @@ async function bootstrap(): Promise<void> {
         const resolved = resolveEditorFontFamily(family);
         for (const g of groups.values()) g.editor.updateOptions({ fontFamily: resolved });
         remeasureEditorFontsWhenReady(family);
+    });
+
+    window.addEventListener('message', (event) => {
+        const msg = (event as MessageEvent).data;
+        if (msg?.type !== 'completionDelayMsChanged' && msg?.type !== 'settingsResponse') return;
+        if (event.source !== null) return;
+        completionDelayMs = msg.completionDelayMs;
+        for (const g of groups.values()) g.editor.updateOptions({ quickSuggestionsDelay: completionDelayMs });
     });
 
     // ---- File info line (hidden unless the Info tab's checkbox shows it) ----
@@ -1105,7 +1114,7 @@ async function bootstrap(): Promise<void> {
         await nextTick();
         const container = appInstance.getEditorContainer(id) as HTMLElement | null;
         if (!container) throw new Error(`Editor container for group ${id} not found`);
-        const group = new EditorGroup(id, container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily });
+        const group = new EditorGroup(id, container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily, completionDelayMs });
         groups.set(id, group);
         wireGroupCommon(group);
         for (const hook of groupWireHooks) hook(group);
@@ -1118,7 +1127,7 @@ async function bootstrap(): Promise<void> {
     // ---- Seed the primary group (g0 already rendered by App.vue) ----
     const g0Container = appInstance.getEditorContainer('g0') as HTMLElement | null;
     if (!g0Container) throw new Error('Primary editor container not found');
-    const primaryGroup = new EditorGroup('g0', g0Container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily });
+    const primaryGroup = new EditorGroup('g0', g0Container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily, completionDelayMs });
     groups.set('g0', primaryGroup);
     setActiveGroup(primaryGroup);
     wireGroupCommon(primaryGroup);
