@@ -12,6 +12,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_fs::FsExt;
+use tauri_plugin_window_state::StateFlags;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -23,6 +24,7 @@ static DRAFTS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static SIDECAR_TAIL: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
 // Per-launch bearer for the sidecar's /api routes. See api_token().
 static API_TOKEN: OnceLock<String> = OnceLock::new();
+static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
 
 // Name of the .NET apphost inside the resource dir. All ~200 sibling
 // DLLs / native libs / deps.json / runtimeconfig.json land next to it so
@@ -45,6 +47,14 @@ struct PendingLaunchFiles(Mutex<Vec<String>>);
 struct FocusedWindow(Mutex<String>);
 
 impl Default for FocusedWindow {
+    fn default() -> Self {
+        Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
+    }
+}
+
+struct PrimaryWindow(Mutex<String>);
+
+impl Default for PrimaryWindow {
     fn default() -> Self {
         Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
     }
@@ -537,11 +547,15 @@ fn set_recent_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
     refresh_all_menus(&app)
 }
 
-/// Labels of every open window. The frontend needs the count to tell whether it is the
-/// last window (and so owes the full exit), and the list to ask the others to close.
+/// Labels of every open window.
 #[tauri::command]
 fn window_labels(app: AppHandle) -> Vec<String> {
     app.webview_windows().into_keys().collect()
+}
+
+#[tauri::command]
+fn primary_window(state: State<'_, PrimaryWindow>) -> String {
+    state.0.lock().expect("primary window mutex poisoned").clone()
 }
 
 /// Opens another window in this process — one sidecar, one store, one drafts dir. Cloning
@@ -557,19 +571,41 @@ async fn new_window(app: AppHandle) -> Result<String, String> {
         .ok_or("no window configured")?
         .clone();
 
-    let label = (2..)
-        .map(|n| format!("{MAIN_WINDOW_LABEL}-{n}"))
-        .find(|l| app.get_webview_window(l).is_none())
-        .expect("an unused window label exists");
+    let label = format!(
+        "{MAIN_WINDOW_LABEL}-{}",
+        NEXT_WINDOW_NUMBER.fetch_add(1, Ordering::Relaxed)
+    );
     config.label = label.clone();
 
     let menu = build_menu(&app, &label).map_err(|e| e.to_string())?;
-    tauri::WebviewWindowBuilder::from_config(&app, &config)
+    let window = tauri::WebviewWindowBuilder::from_config(&app, &config)
         .map_err(|e| e.to_string())?
         .menu(menu)
+        .focused(true)
         .build()
         .map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    window.as_ref().set_focus().map_err(|e| e.to_string())?;
     Ok(label)
+}
+
+// Windows may prevent the existing instance from taking focus after a repeat launch.
+// The user-launched process grants it foreground permission before exiting.
+#[cfg(windows)]
+fn allow_existing_instance_foreground(identifier: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId,
+    };
+
+    let class: Vec<u16> = format!("{identifier}-sic").encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let window = FindWindowW(class.as_ptr(), std::ptr::null());
+        if !window.is_null() {
+            let mut process_id = 0;
+            GetWindowThreadProcessId(window, &mut process_id);
+            AllowSetForegroundWindow(process_id);
+        }
+    }
 }
 
 /// Native Save / Don't Save / Cancel prompt. The dialog plugin's JS API tops out at two
@@ -1462,18 +1498,51 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
+    let context = tauri::generate_context!();
+    #[cfg(all(windows, feature = "window-tests"))]
+    let context = {
+        let mut context = context;
+        let port = std::env::var("CALCPAD_TEST_DEBUG_PORT").expect("test debug port is required");
+        for window in &mut context.config_mut().app.windows {
+            let args = window
+                .additional_browser_args
+                .get_or_insert_with(String::new);
+            args.push_str(&format!(" --remote-debugging-port={port}"));
+        }
+        context
+    };
+    #[cfg(windows)]
+    allow_existing_instance_foreground(&context.config().identifier);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                let _ = w.show();
-                let _ = w.set_focus();
-                let _ = w.unminimize();
+            let files = extract_launch_files(argv);
+            if files.is_empty() {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    new_window(app)
+                        .await
+                        .expect("failed to open window for application launch");
+                });
+                return;
             }
-            for path in extract_launch_files(argv) {
+
+            let target = app
+                .state::<FocusedWindow>()
+                .0
+                .lock()
+                .expect("focused window mutex poisoned")
+                .clone();
+            let window = app
+                .get_webview_window(&target)
+                .expect("last focused window is unavailable");
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            for path in files {
                 // The OS handing us this path is the user's consent; no dialog ran.
                 allow_file_and_parent(app, &path);
                 let _ = app.emit_to(
-                    MAIN_WINDOW_LABEL,
+                    &target,
                     "open-file-request",
                     path.to_string_lossy().to_string(),
                 );
@@ -1502,23 +1571,18 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        // Applies the saved geometry after the window is created, so it wins over the
-        // config's `center: true`. StateFlags is spelled out rather than defaulted to
-        // all(): VISIBLE makes the plugin hide-then-show the window on restore, which is
-        // what the GNOME note in setup() below forbids and leaves the webview blank.
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
+                .with_filter(|label| label == MAIN_WINDOW_LABEL)
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
                 .build(),
         )
         .manage(ServerState::default())
         .manage(PendingLaunchFiles::default())
         .manage(FocusedWindow::default())
+        .manage(PrimaryWindow::default())
         .manage(MenuState::default())
+        .menu(|app| build_menu(app, MAIN_WINDOW_LABEL))
         .invoke_handler(tauri::generate_handler![
             server_url,
             server_failure,
@@ -1538,6 +1602,7 @@ pub fn run() {
             set_recent_files,
             confirm_three_way,
             window_labels,
+            primary_window,
             new_window,
         ])
         .on_window_event(|window, event| match event {
@@ -1560,8 +1625,6 @@ pub fn run() {
                     .lock()
                     .expect("focused window mutex poisoned") = window.label().to_string();
             }
-            // `new_window` reuses the lowest free `main-N`, so a stale entry would
-            // otherwise seed the next window with the old one's View state.
             tauri::WindowEvent::Destroyed => {
                 window
                     .state::<MenuState>()
@@ -1569,10 +1632,37 @@ pub fn run() {
                     .lock()
                     .expect("menu state mutex poisoned")
                     .remove(window.label());
+
+                let app = window.app_handle();
+                let next = app
+                    .webview_windows()
+                    .into_keys()
+                    .filter(|label| label != window.label())
+                    .min();
+                if let Some(next) = next {
+                    let primary = app.state::<PrimaryWindow>();
+                    let mut primary = primary.0.lock().expect("primary window mutex poisoned");
+                    let changed = *primary == window.label();
+                    if changed {
+                        *primary = next;
+                    }
+                    let focused = app.state::<FocusedWindow>();
+                    let mut focused = focused.0.lock().expect("focused window mutex poisoned");
+                    if *focused == window.label() {
+                        *focused = primary.clone();
+                    }
+                    if changed {
+                        let _ = app.emit("primary-window-changed", primary.clone());
+                    }
+                }
             }
             _ => {}
         })
         .setup(|app| {
+            app.get_webview_window(MAIN_WINDOW_LABEL)
+                .expect("main window exists during setup")
+                .unmaximize()?;
+
             // Pin the on-disk locations the panic hook + draft commands need.
             // app_data_dir is per-user and writable on all supported platforms.
             if let Ok(data_dir) = app.path().app_data_dir() {
@@ -1587,8 +1677,6 @@ pub fn run() {
                 let _ = DRAFTS_DIR.set(drafts);
             }
 
-            let menu = build_menu(app.handle(), MAIN_WINDOW_LABEL)?;
-            app.set_menu(menu)?;
             let handle_for_menu = app.handle().clone();
             // Addressed to the focused window: this handler fires for every window's menu,
             // so a broadcast would run each click and accelerator in all of them at once.
@@ -1665,7 +1753,7 @@ pub fn run() {
         })
         // No CloseRequested handler: the frontend preventDefaults it, so killing there
         // leaves an open window with a dead server.
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {
