@@ -983,7 +983,7 @@ button.modal-btn {
 }
 
 /* Status bar */
-.status-bar {
+#app > .status-bar {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -996,7 +996,7 @@ button.modal-btn {
     user-select: none;
 }
 
-.status-bar:hover {
+#app > .status-bar:hover {
     background: var(--vscode-statusBar-hoverBackground, #1f8ad2);
 }
 
