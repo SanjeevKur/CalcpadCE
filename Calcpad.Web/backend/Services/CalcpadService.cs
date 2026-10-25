@@ -553,7 +553,7 @@ tan_angle = tan(angle°)";
 
         /// <summary>
         /// True for the first line of a metadata comment ('<!--{...}-->) whose JSON carries
-        /// a 'uiOverrides' or 'fileInfo' key. A cheap substring check rather than a JSON parse,
+        /// a 'uiOverrides' or 'fileInfo' key, or the footer's '<!--CalcpadCE Metadata--> anchor. A cheap substring check rather than a JSON parse,
         /// matching the rest of this method's line-based approach - good enough since the host
         /// always writes the keys verbatim.
         /// </summary>
@@ -563,7 +563,8 @@ tan_angle = tan(angle°)";
             return (trimmed.StartsWith('\'') || trimmed.StartsWith('"'))
                 && trimmed.Contains("<!--", StringComparison.Ordinal)
                 && (trimmed.Contains("\"uiOverrides\"", StringComparison.Ordinal)
-                    || trimmed.Contains("\"fileInfo\"", StringComparison.Ordinal));
+                    || trimmed.Contains("\"fileInfo\"", StringComparison.Ordinal)
+                    || trimmed.Contains("<!--CalcpadCE Metadata-->", StringComparison.Ordinal));
         }
     }
 }

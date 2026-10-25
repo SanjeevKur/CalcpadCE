@@ -16,8 +16,9 @@ import type { PdfSettings } from '../../types/pdf-settings';
 import { buildImageCommentLine, bytesToBase64 } from '../image-utils';
 import type { ImageStorageMode, PickedImage } from '../image-utils';
 import { extractPlotsFromHtml, type ExtractedPlot } from '../plot-extract';
-import { extractUiControls } from '../ui-overrides';
+import { extractUiControls, readUiOverrides } from '../ui-overrides';
 import { readFileInfo, planFileInfoEdit, sanitizeFileInfoPatch, stampFileInfoText, pdfDocumentTitle } from '../file-info';
+import { planMetadataFooter, toRangeEdits, type LineEdit } from '../metadata-footer';
 import type { UiControl } from '../ui-overrides';
 import { COMPILED_MIME } from '../cpdz';
 import { DEFAULT_PREVIEW_SIZE_MB, DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT } from '../preview-limits';
@@ -33,7 +34,7 @@ export interface ExportRequest {
 }
 
 /** A sidebar form whose unapplied edits the host prompts about before closing a document. */
-export type DraftForm = 'properties' | 'info';
+export type DraftForm = 'properties' | 'info' | 'uiOverrides';
 
 export interface QuickPickOption<T> {
     label: string;
@@ -218,7 +219,7 @@ export abstract class BaseMessageBridge {
         this._documentSaver = saver;
     }
 
-    /** Host injects a sink for the Properties and Info tabs' unsaved-draft flags, per document. */
+    /** Host injects a sink for the Properties tab's unsaved-draft flags, per form and document. */
     setMetadataDirtySink(fn: (docKey: string, dirty: boolean, form: DraftForm) => void): void {
         this._metadataDirtySink = fn;
     }
@@ -260,12 +261,14 @@ export abstract class BaseMessageBridge {
         };
     }
 
-    /** Send the active document's file info to the Vue sidebar's Info tab. */
-    refreshFileInfo(): void {
+    /** Send the active document's file info and saved #UI values to the Properties tab. */
+    refreshDocumentMetadata(): void {
         const model = this.getActiveMonacoEditor()?.getModel();
+        const text = model?.getValue();
         this.postToVue({
-            type: 'fileInfo',
-            info: model ? readFileInfo(model.getValue().split(/\r?\n/)) : null,
+            type: 'documentMetadata',
+            info: text !== undefined ? readFileInfo(text.split(/\r?\n/)) : null,
+            uiOverrides: text !== undefined ? readUiOverrides(text) ?? {} : {},
             hasDocument: !!model,
             docKey: model ? this.getMetadataDocKey() : '',
         });
@@ -416,26 +419,25 @@ export abstract class BaseMessageBridge {
                 break;
             case 'metadataDraftDirty':
                 this._metadataDirtySink?.(String(message.docKey ?? ''), !!message.dirty,
-                    message.form === 'info' ? 'info' : 'properties');
+                    message.form === 'info' || message.form === 'uiOverrides' ? message.form : 'properties');
                 break;
             case 'getUiControls':
                 this.handleGetUiControls();
                 break;
-            case 'getFileInfo':
-                this.refreshFileInfo();
+            case 'getDocumentMetadata':
+                this.refreshDocumentMetadata();
                 break;
             case 'updateFileInfo':
                 this.handleUpdateFileInfo(message.patch);
+                break;
+            case 'updateUiOverrides':
+                this.handleUpdateUiOverrides(message.overrides);
                 break;
             case 'markFileReviewed':
                 void this.handleMarkFileReviewed();
                 break;
             case 'updateUserName':
                 this.setExtraSetting('userName', String(message.value ?? '').trim());
-                break;
-            case 'updateShowFileInfoLine':
-                this.setExtraSetting('showFileInfoLine', String(!!message.enabled));
-                this.postToVue({ type: 'showFileInfoLineChanged', enabled: !!message.enabled });
                 break;
             case 'goToLine':
                 this.handleGoToLine(message.line);
@@ -596,7 +598,6 @@ export abstract class BaseMessageBridge {
                 || DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT,
             editorFontFamily: this.getExtraSetting('editorFontFamily') ?? 'JuliaMono',
             userName: this.getExtraSetting('userName') ?? '',
-            showFileInfoLine: this.getExtraSetting('showFileInfoLine') === 'true',
             writeMode: this.writeMode(),
             ...extras,
         });
@@ -1183,30 +1184,43 @@ export abstract class BaseMessageBridge {
         this.postToVue({ type: 'metadataContext', block });
     }
 
-    /**
-     * Applies the Info tab's edit to the comment it read; a document without one has nothing to
-     * edit yet. Edited through the model, since a compiled worksheet's editor is read-only.
-     */
+    /** Applies footer edits through the model, since a compiled worksheet's editor is read-only. */
+    private applyFooterEdits(edits: LineEdit[]): void {
+        const model = this.getActiveMonacoEditor()?.getModel();
+        if (!model || !edits.length) return;
+        const ranges = toRangeEdits(edits, model.getLineCount(), i => model.getLineMaxColumn(i + 1) - 1, model.getEOL());
+        model.pushStackElement();
+        model.pushEditOperations([], ranges.map(r => ({
+            range: {
+                startLineNumber: r.startLine + 1,
+                startColumn: r.startCharacter + 1,
+                endLineNumber: r.endLine + 1,
+                endColumn: r.endCharacter + 1,
+            },
+            text: r.text,
+        })), () => null);
+        model.pushStackElement();
+    }
+
+    /** Applies the Properties tab's file-info edit; a document without one has nothing to edit yet. */
     private handleUpdateFileInfo(patch: unknown): void {
         const model = this.getActiveMonacoEditor()?.getModel();
         if (!model) return;
         const lines = model.getValue().split(/\r?\n/);
         const current = readFileInfo(lines);
         if (!current) return;
+        this.applyFooterEdits(planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) }));
+        this.refreshDocumentMetadata();
+    }
 
-        const edit = planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) });
-        model.pushStackElement();
-        model.pushEditOperations([], [{
-            range: {
-                startLineNumber: edit.line + 1,
-                startColumn: 1,
-                endLineNumber: edit.endLine + 1,
-                endColumn: model.getLineMaxColumn(edit.endLine + 1),
-            },
-            text: edit.text,
-        }], () => null);
-        model.pushStackElement();
-        this.refreshFileInfo();
+    /** Writes the Properties tab's saved #UI values, and hands them to the in-memory store. */
+    private handleUpdateUiOverrides(raw: unknown): void {
+        const model = this.getActiveMonacoEditor()?.getModel();
+        if (!model || !raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+        const overrides = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v)]));
+        this.applyFooterEdits(planMetadataFooter(model.getValue().split(/\r?\n/), { uiOverrides: overrides }));
+        this._uiOverridesSink?.(overrides);
+        this.refreshDocumentMetadata();
     }
 
     /**
@@ -1220,7 +1234,7 @@ export abstract class BaseMessageBridge {
         if (saver?.isDirty() && !await saver.save()) return;
         this.handleUpdateFileInfo({ reviewedBy: userName, reviewedAt: new Date().toISOString() });
         await saver?.save();
-        this.refreshFileInfo();
+        this.refreshDocumentMetadata();
     }
 
     /** 0-based index of the line equal to `text`, closest to `near`; null if none. */
@@ -1247,6 +1261,7 @@ interface MonacoModelLike {
     getValue(): string;
     getLineCount(): number;
     getLineMaxColumn(line: number): number;
+    getEOL(): string;
     pushStackElement(): void;
     pushEditOperations(before: [], edits: { range: MonacoRangeLike; text: string }[], cursorComputer: () => null): unknown;
 }

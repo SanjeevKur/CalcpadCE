@@ -559,12 +559,12 @@ interface LintDiagnostic {
 | CPD-3413 | Semantic | Invalid #settings JSON |
 | CPD-3414 | Semantic | Invalid PDF settings in a metadata comment |
 | CPD-3415 | Semantic | Invalid #UI format |
-| CPD-3416 | Semantic | 'uiOverrides' metadata comment not at the top of the file |
+| CPD-3416 | Semantic | 'uiOverrides' metadata comment not at the end of the file |
 | CPD-3417 | Semantic | Duplicate 'uiOverrides' metadata comment |
 | CPD-3418 | Semantic | 'uiOverrides' sharing a comment with another key |
 | CPD-3419 | Semantic | Deprecated stored input value |
 | CPD-3420 | Semantic | Deprecated #input keyword |
-| CPD-3421 | Semantic | 'fileInfo' metadata comment not on the first line |
+| CPD-3421 | Semantic | 'fileInfo' metadata comment not on the last line |
 | **Stage 3: Format (CPD-36xx)** |||
 | CPD-3601 | Format | Invalid format specifier |
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using Calcpad.Highlighter.HtmlComment;
 using Calcpad.Highlighter.Linter.Constants;
@@ -39,9 +40,12 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
         public void Validate(Stage3Context stage3, LinterResult result, TokenizedLineProvider tokenProvider)
         {
             var sawUiOverrides = false;
-            // The line a 'uiOverrides' comment may start on: the first, or the one after a file-info comment there.
-            var uiOverridesLine = 0;
-            foreach (var block in _parser.Parse(tokenProvider.AllTokens))
+            var blocks = _parser.Parse(tokenProvider.AllTokens).ToList();
+            // The footer: 'fileInfo' closes the file, with 'uiOverrides' directly above it.
+            var fileInfoEndLine = LastContentLine(stage3, stage3.Lines.Count);
+            var fileInfoFooter = blocks.FirstOrDefault(b => b.EndLine == fileInfoEndLine && HasKey(b, "fileInfo"));
+            var uiOverridesEndLine = fileInfoFooter is null ? fileInfoEndLine : LastContentLine(stage3, fileInfoFooter.StartLine);
+            foreach (var block in blocks)
             {
                 if (block.StartLine >= stage3.Lines.Count || !tokenProvider.IsCpdMode(block.StartLine))
                     continue;
@@ -67,9 +71,8 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
                 reporter.CheckKnownKeys(root, KnownKeys.Contains, "metadata property");
                 ValidateTypes(block, root, stage3, tokenProvider, reporter);
                 ValidateLintRegions(root, reporter);
-                if (ValidateFileInfo(block, root, stage3, reporter))
-                    uiOverridesLine = block.EndLine + 1;
-                ValidateUiOverrides(block, root, stage3, reporter, uiOverridesLine, ref sawUiOverrides);
+                ValidateFileInfo(block, root, stage3, reporter, fileInfoEndLine);
+                ValidateUiOverrides(block, root, stage3, reporter, uiOverridesEndLine, ref sawUiOverrides);
                 ValidatePdf(root, reporter);
             }
         }
@@ -149,21 +152,20 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
         /// checked - a key may deliberately be broader than any single control, and one left behind
         /// by an edit is not an error.
         /// <para>
-        /// The host only ever reads the first 'uiOverrides' comment it finds, and only at the top of
-        /// the file (the first line, or the one after the file-info comment), so anything else is
-        /// flagged here rather than left to fail quietly - as
+        /// The host keeps 'uiOverrides' at the end of the file, directly above the file-info comment,
+        /// and moves one found elsewhere there on save, so anything else is flagged here - as
         /// is sharing the comment with another key, since both the Properties tab and the host's
         /// save/restore round-trip rewrite such a comment in place by its position. A comment
         /// reached through #include is skipped entirely, because <c>CalcpadService</c> strips
         /// 'uiOverrides' out of included content before rendering.
         /// </para>
         /// </summary>
-        private static void ValidateUiOverrides(HtmlCommentBlock block, JsonElement root, Stage3Context stage3, DirectiveJsonReporter reporter, int expectedLine, ref bool sawUiOverrides)
+        private static void ValidateUiOverrides(HtmlCommentBlock block, JsonElement root, Stage3Context stage3, DirectiveJsonReporter reporter, int expectedEndLine, ref bool sawUiOverrides)
         {
             if (!root.TryGetProperty("uiOverrides", out var overrides))
                 return;
 
-            if (stage3.IncludeMap.TryGetValue(block.StartLine, out var sourceInfo) && sourceInfo.Source == "include")
+            if (IsIncluded(stage3, block.StartLine))
                 return;
 
             if (HasKeyOtherThan(root, "uiOverrides"))
@@ -173,10 +175,10 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
             }
 
             var wasMisplacedOrDuplicate = false;
-            if (block.StartLine != expectedLine)
+            if (block.EndLine != expectedEndLine)
             {
                 reporter.For(MisplacedUiOverridesCode, "metadata comment")
-                    .Warn("'uiOverrides' has no effect unless its comment is on the first line of the file, or directly below the 'fileInfo' comment");
+                    .Warn("'uiOverrides' belongs at the end of the file, directly above the 'fileInfo' comment - saving moves it there");
                 wasMisplacedOrDuplicate = true;
             }
 
@@ -204,29 +206,26 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
             }
         }
 
-        /// <summary>
-        /// Checks the document's file info: an object of strings, read only off the first line.
-        /// Returns true for a well-placed one, which moves where 'uiOverrides' belongs.
-        /// </summary>
-        private static bool ValidateFileInfo(HtmlCommentBlock block, JsonElement root, Stage3Context stage3, DirectiveJsonReporter reporter)
+        /// <summary>Checks the document's file info: an object of strings, read only off the last line.</summary>
+        private static void ValidateFileInfo(HtmlCommentBlock block, JsonElement root, Stage3Context stage3, DirectiveJsonReporter reporter, int expectedEndLine)
         {
             if (!root.TryGetProperty("fileInfo", out var info))
-                return false;
+                return;
 
-            if (stage3.IncludeMap.TryGetValue(block.StartLine, out var sourceInfo) && sourceInfo.Source == "include")
-                return false;
+            if (IsIncluded(stage3, block.StartLine))
+                return;
 
-            if (block.StartLine != 0)
+            if (block.EndLine != expectedEndLine)
             {
                 reporter.For(MisplacedFileInfoCode, "metadata comment")
-                    .Warn("'fileInfo' has no effect unless its comment is on the first line of the file");
-                return false;
+                    .Warn("'fileInfo' has no effect unless its comment is on the last line of the file");
+                return;
             }
 
             if (info.ValueKind != JsonValueKind.Object)
             {
                 reporter.Warn("'fileInfo' must be a JSON object");
-                return true;
+                return;
             }
 
             foreach (var prop in info.EnumerateObject())
@@ -234,8 +233,26 @@ namespace Calcpad.Highlighter.Linter.Validators.Stage3
                 if (prop.Value.ValueKind != JsonValueKind.String)
                     reporter.Warn($"'fileInfo' value for '{prop.Name}' must be a string");
             }
-            return true;
         }
+
+        private static bool IsIncluded(Stage3Context stage3, int line) =>
+            stage3.IncludeMap.TryGetValue(line, out var sourceInfo) && sourceInfo.Source == "include";
+
+        /// <summary>Last non-blank line of the file itself above <paramref name="before"/>, or -1.</summary>
+        private static int LastContentLine(Stage3Context stage3, int before)
+        {
+            for (var i = Math.Min(before, stage3.Lines.Count) - 1; i >= 0; i--)
+            {
+                if (!string.IsNullOrWhiteSpace(stage3.Lines[i]) && !IsIncluded(stage3, i))
+                    return i;
+            }
+            return -1;
+        }
+
+        private static bool HasKey(HtmlCommentBlock block, string key) =>
+            block.Status == HtmlCommentParseStatus.Success
+            && block.Data is { ValueKind: JsonValueKind.Object } data
+            && data.TryGetProperty(key, out _);
 
         private static bool HasKeyOtherThan(JsonElement root, string key)
         {

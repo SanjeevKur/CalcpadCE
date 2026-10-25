@@ -23,7 +23,7 @@ import {
     MIN_PREVIEW_SIZE_MB,
     MIN_CONSOLE_MESSAGES_PER_DOCUMENT,
     MAX_INLINE_IMAGE_TOTAL_BYTES,
-    findFileInfoSpan,
+    toRangeEdits,
     planFileInfoStamp,
     onlyReviewChanged,
     previewSizeLimitChars,
@@ -59,6 +59,7 @@ import type { UiControl, CalcpadLogLevel, DisplayLogLevel, DraftForm } from 'cal
 import './editor/vscode-variables.css';
 import 'calcpad-frontend/vue/styles/base.css';
 import './styles/app.css';
+import { MetadataFooterView } from './editor/metadata-footer-view';
 
 // Monaco worker setup — must run before editor creation
 import './editor/workers';
@@ -357,41 +358,6 @@ async function bootstrap(): Promise<void> {
         const resolved = resolveEditorFontFamily(family);
         for (const g of groups.values()) g.editor.updateOptions({ fontFamily: resolved });
         remeasureEditorFontsWhenReady(family);
-    });
-
-    // ---- File info line (hidden unless the Info tab's checkbox shows it) ----
-    const FILE_INFO_HIDDEN_SOURCE = 'calcpad-file-info';
-    const hiddenFileInfoEnd = new Map<string, number>();
-    const appliedFileInfoHiding = new Map<string, string>();
-
-    function applyFileInfoVisibility(group: EditorGroup): void {
-        const model = group.editor.getModel();
-        const span = model && editorBridge.getExtraSetting('showFileInfoLine') !== 'true'
-            ? findFileInfoSpan(i => model.getLineContent(i + 1), model.getLineCount())
-            : null;
-        // Hiding every line would leave Monaco nothing to show.
-        const hide = span && model && span.end + 1 < model.getLineCount() ? span : null;
-        const applied = `${model?.id}:${hide?.end ?? ''}`;
-        if (appliedFileInfoHiding.get(group.id) === applied) return;
-        appliedFileInfoHiding.set(group.id, applied);
-        if (hide) hiddenFileInfoEnd.set(group.id, hide.end);
-        else hiddenFileInfoEnd.delete(group.id);
-        (group.editor as unknown as { setHiddenAreas(ranges: monaco.IRange[], source?: unknown): void })
-            .setHiddenAreas(hide ? [new monaco.Range(hide.start + 1, 1, hide.end + 1, 1)] : [], FILE_INFO_HIDDEN_SOURCE);
-        keepCursorOutOfFileInfo(group);
-    }
-
-    // A new model puts the cursor at 1:1, which is inside the hidden comment; typing there edits it unseen.
-    function keepCursorOutOfFileInfo(group: EditorGroup): void {
-        const end = hiddenFileInfoEnd.get(group.id);
-        const selection = group.editor.getSelection();
-        if (end === undefined || !selection?.isEmpty() || selection.positionLineNumber > end + 1) return;
-        group.editor.setPosition({ lineNumber: end + 2, column: 1 });
-    }
-
-    window.addEventListener('message', (event) => {
-        if ((event as MessageEvent).data?.type !== 'showFileInfoLineChanged') return;
-        for (const g of groups.values()) applyFileInfoVisibility(g);
     });
 
     // ---- Group-scoped refresh helpers ----
@@ -879,7 +845,7 @@ async function bootstrap(): Promise<void> {
         // Refresh active-group-scoped UI (Problems panel, sidebar TOC, preview).
         refreshProblemsFor(group);
         activeBridge.refreshHeadings();
-        activeBridge.refreshFileInfo();
+        activeBridge.refreshDocumentMetadata();
         refreshUiDirtyIndicator();
         syncInputMode();
         if (appInstance.isPreviewVisible()) void refreshPreviewFor(group);
@@ -1018,9 +984,8 @@ async function bootstrap(): Promise<void> {
         let previewTimer: ReturnType<typeof setTimeout> | null = null;
         let tocTimer: ReturnType<typeof setTimeout> | null = null;
         group.disposables.push(
-            ed.onDidChangeModel(() => applyFileInfoVisibility(group)),
+            new MetadataFooterView(ed),
             ed.onDidChangeModelContent(() => {
-                applyFileInfoVisibility(group);
                 if (definitionsTimer) clearTimeout(definitionsTimer);
                 definitionsTimer = setTimeout(() => {
                     invalidateUiControls(group);
@@ -1034,7 +999,7 @@ async function bootstrap(): Promise<void> {
                     if (tocTimer) clearTimeout(tocTimer);
                     tocTimer = setTimeout(() => {
                         activeBridge.refreshHeadings();
-                        activeBridge.refreshFileInfo();
+                        activeBridge.refreshDocumentMetadata();
                     }, 800);
                 }
             }),
@@ -1047,7 +1012,6 @@ async function bootstrap(): Promise<void> {
         let metadataContextTimer: ReturnType<typeof setTimeout> | null = null;
         group.disposables.push(
             ed.onDidChangeCursorPosition(() => {
-                keepCursorOutOfFileInfo(group);
                 if (group === activeGroup) {
                     if (metadataContextTimer) clearTimeout(metadataContextTimer);
                     metadataContextTimer = setTimeout(() => {
@@ -1080,13 +1044,12 @@ async function bootstrap(): Promise<void> {
             if (!enteringUi && appInstance.isPreviewVisible()) void refreshPreviewFor(group);
             if (group === activeGroup) {
                 activeBridge.refreshHeadings();
-                activeBridge.refreshFileInfo();
+                activeBridge.refreshDocumentMetadata();
             }
             void refreshDefinitionsFor(group);
             if (enteringUi) autoEnterUiMode();
         });
 
-        applyFileInfoVisibility(group);
         // Initial definitions population for the seeded tab.
         setTimeout(() => void refreshDefinitionsFor(group), 500);
     }
@@ -1865,15 +1828,19 @@ async function bootstrap(): Promise<void> {
     }
 
     /**
-     * A Properties or Info form edited but not applied lives only in the panel, so closing the
+     * A Properties form edited but not applied lives only in the panel, so closing the
      * document it belongs to throws it away. Returns false when the user backs out.
      */
     async function confirmDiscardMetadataDraft(docKey: string, title: string): Promise<boolean> {
         const forms = metadataDirty.get(docKey);
         if (!forms) return true;
-        const names = [forms.has('properties') && 'Properties', forms.has('info') && 'Info'].filter(Boolean).join(' and ');
+        const names = [
+            forms.has('info') && 'File Info',
+            forms.has('uiOverrides') && 'UI Overrides',
+            forms.has('properties') && 'Properties',
+        ].filter(Boolean).join(', ');
         const choice = await confirmThreeWay({
-            title: forms.has('properties') ? 'Unsaved properties' : 'Unsaved file info',
+            title: 'Unsaved properties',
             message: `Discard the unapplied ${names} changes to ${title}?`,
             yesLabel: 'Discard',
             noLabel: 'Keep Editing',
@@ -2155,17 +2122,18 @@ async function bootstrap(): Promise<void> {
         function stampedContentFor(filePath: string, saved?: string): string {
             const model = tabs.activeModel;
             if (!model) return '';
-            const edit = planFileInfoStamp(model.getLinesContent(), {
+            const edits = planFileInfoStamp(model.getLinesContent(), {
                 userName: editorBridge.getExtraSetting('userName') ?? '',
                 programVersion: appVersion,
                 fileName: filePath,
                 reviewOnly: saved !== undefined && onlyReviewChanged(saved, model.getValue()),
             });
-            const range = edit.isNew
-                ? new monaco.Range(1, 1, 1, 1)
-                : new monaco.Range(edit.line + 1, 1, edit.endLine + 1, model.getLineMaxColumn(edit.endLine + 1));
+            const ranges = toRangeEdits(edits, model.getLineCount(), i => model.getLineMaxColumn(i + 1) - 1, model.getEOL());
             // Through the model: a compiled worksheet's editor is read-only and would reject executeEdits.
-            model.pushEditOperations([], [{ range, text: edit.isNew ? edit.text + '\n' : edit.text }], () => null);
+            model.pushEditOperations([], ranges.map(r => ({
+                range: new monaco.Range(r.startLine + 1, r.startCharacter + 1, r.endLine + 1, r.endCharacter + 1),
+                text: r.text,
+            })), () => null);
             return model.getValue();
         }
 

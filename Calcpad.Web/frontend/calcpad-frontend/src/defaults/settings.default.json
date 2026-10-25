@@ -56,7 +56,6 @@
         "dotnetPath": "dotnet",
         "editorFontFamily": "JuliaMono",
         "userName": "",
-        "showFileInfoLine": false,
         "pdfSettings": {
             "format": "Letter",
             "orientation": "portrait",
