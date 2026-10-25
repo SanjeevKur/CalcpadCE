@@ -30,6 +30,18 @@ cd tools\desktop-test
 
 Rust-side `eprintln!` output goes to `.work\app-out.txt`. Crash reports go to `%APPDATA%\com.calcpadce.desktop.test\logs`.
 
+## Window regression tests
+
+Run the window tests on Windows:
+
+```powershell
+.\window-tests.ps1
+```
+
+Use `-Stage` after backend changes, or `-SkipBuild` to reuse the test build.
+The tests cover repeated launches, file routing, titles, independent window closing, backend recovery, session saving, and window geometry.
+Focus notifications and unsaved-change prompt responses are simulated.
+
 ## Gotchas
 
 - **No screenshots.** A hidden desktop is never painted, so `CopyFromScreen` returns nothing. Use `ui.ps1` and `cdp.mjs` instead.

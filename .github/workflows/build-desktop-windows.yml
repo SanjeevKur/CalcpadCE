@@ -47,6 +47,10 @@ jobs:
         shell: pwsh
         run: ./build-desktop.ps1
 
+      - name: Run window regression tests
+        shell: pwsh
+        run: ./tools/desktop-test/window-tests.ps1
+
       - name: Test runtime prerequisites
         working-directory: Calcpad.Web/frontend/calcpad-desktop
         shell: powershell
