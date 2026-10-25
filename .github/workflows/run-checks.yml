@@ -59,8 +59,9 @@ jobs:
       - name: Frontend lib
         if: ${{ !cancelled() }}
         working-directory: Calcpad.Web/frontend/calcpad-frontend
+        # Emits dist/, which the extension resolves calcpad-frontend types from
         run: |
-          npx tsc --noEmit --pretty false -p .
+          npm run build -- --pretty false
           npx tsc --pretty false -p tsconfig.scripts.json
 
       - name: Web
