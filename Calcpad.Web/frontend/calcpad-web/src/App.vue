@@ -61,6 +61,7 @@
                   <span v-if="tab.dirty" class="tab-dirty-dot" :title="'Unsaved changes'">●</span>
                   <button
                     class="icon tab-close"
+                    :disabled="tabCount === 1 && tab.filePath === null"
                     :title="tab.dirty ? 'Close (unsaved changes)' : 'Close'"
                     @mousedown.stop
                     @click.stop="onTabClose(group.id, tab.id)"
@@ -675,6 +676,7 @@ const groups = ref<GroupUi[]>([emptyGroup('g0')])
 const activeGroupId = ref<string>('g0')
 
 const isSplit = computed(() => groups.value.length > 1)
+const tabCount = computed(() => groups.value.reduce((count, group) => count + group.tabs.length, 0))
 const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId.value) ?? groups.value[0])
 
 /** A compiled worksheet has no readable source, so input is the only mode offered. */

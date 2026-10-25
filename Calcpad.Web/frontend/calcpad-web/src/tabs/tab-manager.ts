@@ -1,8 +1,10 @@
 import * as monaco from 'monaco-editor';
 
+export const UNTITLED_TITLE = 'Untitled';
+
 export interface TabState {
     id: string;
-    /** Display label — filename or "Untitled-N". */
+    /** Display label. */
     title: string;
     /** Absolute filesystem path; null for unsaved untitled tabs. */
     filePath: string | null;
@@ -66,7 +68,6 @@ export type TabRemovedListener = (tabId: string) => void;
 export class TabManager {
     private tabs: InternalTab[] = [];
     private _activeId: string | null = null;
-    private _untitledCounter = 0;
     private _seq = 0;
 
     private listeners = new Set<TabsListener>();
@@ -183,13 +184,24 @@ export class TabManager {
 
     /**
      * Create a new untitled tab with the given content (default empty) and activate it,
-     * returning its id. `title` overrides the default "Untitled-N" label.
+     * returning its id.
+     * `title` overrides the default label.
      */
     newUntitled(content: string = '', title?: string): string {
         let label = title;
         if (!label) {
-            this._untitledCounter += 1;
-            label = `Untitled-${this._untitledCounter}`;
+            const untitledTitles = new Set(monaco.editor.getModels().flatMap(model => {
+                const doc = docs.get(model);
+                return doc?.filePath === null && new RegExp(`^${UNTITLED_TITLE}(?:-\\d+)?$`).test(doc.title)
+                    ? [doc.title]
+                    : [];
+            }));
+            label = UNTITLED_TITLE;
+            if (untitledTitles.size > 0) {
+                let suffix = 1;
+                while (untitledTitles.has(`${UNTITLED_TITLE}-${suffix}`)) suffix += 1;
+                label = `${UNTITLED_TITLE}-${suffix}`;
+            }
         }
         const tab = this.createTab({ title: label, filePath: null, content });
         this.activate(tab.id);
