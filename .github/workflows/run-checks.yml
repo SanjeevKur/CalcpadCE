@@ -80,7 +80,7 @@ jobs:
           npx tsc --pretty false -p tsconfig.node.json
 
   rust:
-    name: Rust (clippy)
+    name: Rust (fmt, clippy)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -92,7 +92,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --check
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

@@ -297,8 +297,7 @@ fn draft_write(
         file_path,
         saved_at: unix_millis(),
     };
-    let meta_json =
-        serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
+    let meta_json = serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
     atomic_write(&content_path, content.as_bytes())
         .map_err(|e| format!("write draft content: {e}"))?;
     atomic_write(&meta_path, &meta_json).map_err(|e| format!("write draft meta: {e}"))?;
@@ -358,8 +357,8 @@ fn draft_read(id: String) -> Result<Option<DraftContent>, String> {
     if !content_path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&content_path)
-        .map_err(|e| format!("read draft content: {e}"))?;
+    let content =
+        std::fs::read_to_string(&content_path).map_err(|e| format!("read draft content: {e}"))?;
     let meta = read_draft_meta(&meta_path).unwrap_or(DraftMeta {
         filename: format!("{id}.cpd"),
         file_path: None,
@@ -411,7 +410,11 @@ fn server_token() -> &'static str {
 
 #[tauri::command]
 fn take_pending_launch_files(state: State<'_, PendingLaunchFiles>) -> Vec<String> {
-    state.0.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+    state
+        .0
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Grants read access to `path` and the directory holding it, which is what worksheets need
@@ -434,7 +437,10 @@ fn allow_file_and_parent(app: &AppHandle, path: &Path) {
 fn allow_document_dir(app: AppHandle, path: String) -> Result<(), String> {
     let path = PathBuf::from(&path);
     if !app.fs_scope().is_allowed(&path) {
-        return Err(format!("outside the current read scope: {}", path.display()));
+        return Err(format!(
+            "outside the current read scope: {}",
+            path.display()
+        ));
     }
     let parent = path
         .parent()
@@ -693,7 +699,11 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_file(&port_file);
     let port_file_str = port_file.to_string_lossy().into_owned();
 
-    let exe_name = if cfg!(windows) { SIDECAR_EXE_WINDOWS } else { SIDECAR_EXE_UNIX };
+    let exe_name = if cfg!(windows) {
+        SIDECAR_EXE_WINDOWS
+    } else {
+        SIDECAR_EXE_UNIX
+    };
     let exe_path = app
         .path()
         .resolve(exe_name, BaseDirectory::Resource)
@@ -1003,11 +1013,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
                     }
                 })
                 .await;
-                let tail_snapshot = tail
-                    .lock()
-                    .ok()
-                    .map(|t| t.clone())
-                    .unwrap_or_default();
+                let tail_snapshot = tail.lock().ok().map(|t| t.clone()).unwrap_or_default();
                 // The .NET server writes its own crash log via FileLogger, but
                 // duplicate here anyway — if the sidecar died before .NET's
                 // AppDomain.UnhandledException could fire (SIGKILL, StackOverflow,
@@ -1108,9 +1114,9 @@ fn assign_to_job_object(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
 
@@ -1181,11 +1187,23 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         "Export",
         true,
         &[
-            &MenuItem::with_id(app, "export-pdf", "Report PDF...", true, Some("CmdOrCtrl+E"))?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf",
+                "Report PDF...",
+                true,
+                Some("CmdOrCtrl+E"),
+            )?,
             &MenuItem::with_id(app, "export-html", "Report HTML...", true, None::<&str>)?,
             &MenuItem::with_id(app, "export-docx", "Report Word...", true, None::<&str>)?,
             &sep()?,
-            &MenuItem::with_id(app, "export-pdf:preview", "Preview PDF...", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf:preview",
+                "Preview PDF...",
+                true,
+                None::<&str>,
+            )?,
             &MenuItem::with_id(
                 app,
                 "export-html:preview",
@@ -1255,7 +1273,11 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
     if recent_items.is_empty() {
         recent_refs.push(&no_recent);
     } else {
-        recent_refs.extend(recent_items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>));
+        recent_refs.extend(
+            recent_items
+                .iter()
+                .map(|i| i as &dyn IsMenuItem<tauri::Wry>),
+        );
         recent_refs.push(&recent_sep);
         recent_refs.push(&clear_recent);
     }
@@ -1352,8 +1374,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         Some("CmdOrCtrl+P"),
     )?;
-    let toggle_word_wrap =
-        MenuItem::with_id(app, "toggle-word-wrap", "Toggle Word Wrap", true, Some("Alt+Z"))?;
+    let toggle_word_wrap = MenuItem::with_id(
+        app,
+        "toggle-word-wrap",
+        "Toggle Word Wrap",
+        true,
+        Some("Alt+Z"),
+    )?;
     let split_editor = MenuItem::with_id(
         app,
         "split-editor",
@@ -1384,8 +1411,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         None::<&str>,
     )?;
-    let mode_input =
-        MenuItem::with_id(app, "result-mode:ui", "Result Mode: Input", true, None::<&str>)?;
+    let mode_input = MenuItem::with_id(
+        app,
+        "result-mode:ui",
+        "Result Mode: Input",
+        true,
+        None::<&str>,
+    )?;
     let mode_report = MenuItem::with_id(
         app,
         "result-mode:report",
@@ -1433,13 +1465,7 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
                 None::<&str>,
             )?,
             &MenuItem::with_id(app, "stop-server", "Stop Server", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "restart-server",
-                "Restart Server",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "restart-server", "Restart Server", true, None::<&str>)?,
         ],
     )?;
 
@@ -1626,8 +1652,11 @@ pub fn run() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 if let Ok(drafts) = draft_list() {
                     if !drafts.is_empty() {
-                        let _ =
-                            handle_for_drafts.emit_to(MAIN_WINDOW_LABEL, "drafts-recovered", drafts);
+                        let _ = handle_for_drafts.emit_to(
+                            MAIN_WINDOW_LABEL,
+                            "drafts-recovered",
+                            drafts,
+                        );
                     }
                 }
             });
@@ -1639,7 +1668,10 @@ pub fn run() {
             let launch_files = extract_launch_files(std::env::args());
             if !launch_files.is_empty() {
                 let pending: State<'_, PendingLaunchFiles> = app.state();
-                let mut guard = pending.0.lock().expect("pending launch files mutex poisoned");
+                let mut guard = pending
+                    .0
+                    .lock()
+                    .expect("pending launch files mutex poisoned");
                 for path in launch_files {
                     allow_file_and_parent(app.handle(), &path);
                     guard.push(path.to_string_lossy().to_string());

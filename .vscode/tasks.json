@@ -721,6 +721,25 @@
             }
         },
         {
+            "label": "Check: Rust Format",
+            "type": "process",
+            "group": "test",
+            "command": "cargo",
+            "args": ["fmt", "--check"],
+            "options": { "cwd": "${workspaceFolder}/Calcpad.Web/frontend/calcpad-desktop/src-tauri" },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Fix: Rust Format",
+            "type": "process",
+            "command": "cargo",
+            "args": ["fmt"],
+            "options": { "cwd": "${workspaceFolder}/Calcpad.Web/frontend/calcpad-desktop/src-tauri" },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "problemMatcher": []
+        },
+        {
             "label": "Check: All",
             "dependsOn": [
                 "Check: .NET Lint",
@@ -728,7 +747,8 @@
                 "Check: TypeScript (Frontend Lib)",
                 "Check: TypeScript (Web)",
                 "Check: TypeScript (Extension)",
-                "Check: Rust"
+                "Check: Rust",
+                "Check: Rust Format"
             ],
             "dependsOrder": "parallel",
             "group": "test",
