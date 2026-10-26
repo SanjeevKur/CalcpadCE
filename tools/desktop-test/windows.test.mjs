@@ -26,6 +26,55 @@ async function dragTab(app, source, tabId, target, beforeId, {cancel = false, ou
 }
 
 describe('desktop windows', {skip: process.platform !== 'win32', concurrency: false}, () => {
+    test('Ctrl-click reuses includes and definitions in another window', {timeout: 90000}, async t => {
+        const app = new TestApp();
+        t.after(() => app.dispose());
+        const target = app.fixture('shared definitions.cpd', "' Shared definitions\n\nshared = 42");
+        const source = app.fixture('navigation source.cpd', `#include ${target.toUpperCase().replaceAll('\\', '/')}\nshared + 1`);
+        const main = await app.start([source]);
+        await app.fileOpen(main, source);
+        await app.evaluate(main, invoke('plugin:window|set_size', {value: {Logical: {width: 1200, height: 700}}}));
+        await until(() => app.evaluate(main, 'window.calcpadActiveEditor.getLayoutInfo().width > 300'), 'editor wide enough for Ctrl-click');
+        const second = await app.newWindow(main);
+        await app.evaluate(second.page, `window.dispatchEvent(new CustomEvent('calcpad-open-file', {
+            detail: {path: ${JSON.stringify(target)}}
+        }))`);
+        await app.fileOpen(second.page, target);
+        await app.evaluate(second.page, `window.calcpadActiveEditor.setValue("' Shared definitions\\n\\nshared = 42\\nunsaved = 7")`);
+        const decoy = app.fixture('other worksheet.cpd');
+        await app.evaluate(second.page, `window.dispatchEvent(new CustomEvent('calcpad-open-file', {
+            detail: {path: ${JSON.stringify(decoy)}}
+        }))`);
+        await app.fileOpen(second.page, decoy);
+
+        await app.focus(main, 'main');
+        await app.ctrlClick(main, {lineNumber: 1, column: 12});
+        await until(() => app.evaluate(second.page,
+            `window.calcpadTabs.activeTab.filePath === ${JSON.stringify(target)}`), 'include activated in other window');
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.count'), 1);
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.activeTab.filePath'), source);
+        assert.equal(await app.evaluate(second.page, 'window.calcpadTabs.activeTab.dirty'), true);
+        assert.match(await app.evaluate(second.page, 'window.calcpadActiveEditor.getValue()'), /unsaved = 7/);
+        await until(() => app.evaluate(second.page, 'document.hasFocus()'), 'existing webview focused');
+
+        await app.evaluate(second.page, 'window.calcpadActiveEditor.setPosition({lineNumber: 1, column: 1})');
+        await app.evaluate(second.page, invoke('plugin:window|minimize'));
+        await app.focus(main, 'main');
+        await app.ctrlClick(main, {lineNumber: 2, column: 3});
+        await until(async () => (await app.evaluate(second.page, 'window.calcpadActiveEditor.getPosition()')).lineNumber === 3,
+            'definition position restored in other window');
+        assert.equal(await app.evaluate(second.page, invoke('plugin:window|is_minimized')), false);
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.count'), 1);
+
+        await app.evaluate(second.page, `window.calcpadBridge.confirmThreeWay = async () => 'no'`);
+        await app.closeAndWait(second.page, second.label);
+        await app.focus(main, 'main');
+        await app.ctrlClick(main, {lineNumber: 2, column: 3});
+        await until(() => app.evaluate(main, 'window.calcpadTabs.count === 2'), 'closed target opens locally');
+        assert.equal(await app.evaluate(main, 'window.calcpadActiveEditor.getPosition().lineNumber'), 3);
+        await app.stop(main, 'main');
+    });
+
     test('document tabs reorder without losing undo history and cancelled drags leave them in place', {timeout: 90000}, async t => {
         const app = new TestApp();
         t.after(() => app.dispose());

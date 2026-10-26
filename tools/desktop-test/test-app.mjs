@@ -111,6 +111,24 @@ export class TestApp {
         } finally { socket.close(); }
     }
 
+    async ctrlClick(page, position) {
+        const point = await this.evaluate(page, `(() => {
+            const editor = window.calcpadActiveEditor;
+            editor.revealPositionInCenter(${JSON.stringify(position)});
+            const visible = editor.getScrolledVisiblePosition(${JSON.stringify(position)});
+            const bounds = editor.getDomNode().getBoundingClientRect();
+            return {x: bounds.left + visible.left + 2, y: bounds.top + visible.top + visible.height / 2};
+        })()`);
+        await this.cdp(page, 'Input.dispatchMouseEvent', {type: 'mouseMoved', ...point, modifiers: 2});
+        await pause(500);
+        await this.cdp(page, 'Input.dispatchMouseEvent', {
+            type: 'mousePressed', ...point, modifiers: 2, button: 'left', clickCount: 1,
+        });
+        await this.cdp(page, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased', ...point, modifiers: 2, button: 'left', clickCount: 1,
+        });
+    }
+
     async windows() {
         const pages = (await (await fetch(`${this.endpoint}/json`)).json()).filter(page => page.type === 'page');
         const result = new Map();
