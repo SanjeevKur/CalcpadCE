@@ -262,9 +262,6 @@ namespace Calcpad.Core
         internal static MathParserException ConditionResultInvalid(string s) =>
             new(string.Format(Messages.Condition_result_is_invalid_0, s));
 
-        internal static MathParserException DuplicateMacroParameters(string s) =>
-            new(string.Format(Messages.Duplicate_macro_parameter_names_0_and_1, s, s));
-
         internal static MathParserException UndefinedMacro(string s) =>
             new(string.Format(Messages.Macro_not_defined_0, s));
 
