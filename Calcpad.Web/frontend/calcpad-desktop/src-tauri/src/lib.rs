@@ -12,6 +12,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_fs::FsExt;
+use tauri_plugin_window_state::StateFlags;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -23,6 +24,7 @@ static DRAFTS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static SIDECAR_TAIL: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
 // Per-launch bearer for the sidecar's /api routes. See api_token().
 static API_TOKEN: OnceLock<String> = OnceLock::new();
+static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
 
 // Name of the .NET apphost inside the resource dir. All ~200 sibling
 // DLLs / native libs / deps.json / runtimeconfig.json land next to it so
@@ -45,6 +47,14 @@ struct PendingLaunchFiles(Mutex<Vec<String>>);
 struct FocusedWindow(Mutex<String>);
 
 impl Default for FocusedWindow {
+    fn default() -> Self {
+        Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
+    }
+}
+
+struct PrimaryWindow(Mutex<String>);
+
+impl Default for PrimaryWindow {
     fn default() -> Self {
         Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
     }
@@ -145,14 +155,15 @@ fn extract_launch_files<I: IntoIterator<Item = String>>(args: I) -> Vec<PathBuf>
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .map(PathBuf::from)
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("cpd") || e.eq_ignore_ascii_case("cpdz"))
-                .unwrap_or(false)
-        })
+        .filter(|p| is_worksheet_path(p))
         .filter(|p| p.exists())
         .collect()
+}
+
+fn is_worksheet_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cpd") || e.eq_ignore_ascii_case("cpdz"))
 }
 
 /// Per-launch shared secret the sidecar requires on every `/api` request, without which any
@@ -297,8 +308,7 @@ fn draft_write(
         file_path,
         saved_at: unix_millis(),
     };
-    let meta_json =
-        serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
+    let meta_json = serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
     atomic_write(&content_path, content.as_bytes())
         .map_err(|e| format!("write draft content: {e}"))?;
     atomic_write(&meta_path, &meta_json).map_err(|e| format!("write draft meta: {e}"))?;
@@ -348,7 +358,7 @@ fn draft_list() -> Result<Vec<DraftInfo>, String> {
             size,
         });
     }
-    out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    out.sort_by_key(|d| std::cmp::Reverse(d.saved_at));
     Ok(out)
 }
 
@@ -358,8 +368,8 @@ fn draft_read(id: String) -> Result<Option<DraftContent>, String> {
     if !content_path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&content_path)
-        .map_err(|e| format!("read draft content: {e}"))?;
+    let content =
+        std::fs::read_to_string(&content_path).map_err(|e| format!("read draft content: {e}"))?;
     let meta = read_draft_meta(&meta_path).unwrap_or(DraftMeta {
         filename: format!("{id}.cpd"),
         file_path: None,
@@ -411,7 +421,11 @@ fn server_token() -> &'static str {
 
 #[tauri::command]
 fn take_pending_launch_files(state: State<'_, PendingLaunchFiles>) -> Vec<String> {
-    state.0.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+    state
+        .0
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Grants read access to `path` and the directory holding it, which is what worksheets need
@@ -434,7 +448,10 @@ fn allow_file_and_parent(app: &AppHandle, path: &Path) {
 fn allow_document_dir(app: AppHandle, path: String) -> Result<(), String> {
     let path = PathBuf::from(&path);
     if !app.fs_scope().is_allowed(&path) {
-        return Err(format!("outside the current read scope: {}", path.display()));
+        return Err(format!(
+            "outside the current read scope: {}",
+            path.display()
+        ));
     }
     let parent = path
         .parent()
@@ -536,11 +553,19 @@ fn set_recent_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
     refresh_all_menus(&app)
 }
 
-/// Labels of every open window. The frontend needs the count to tell whether it is the
-/// last window (and so owes the full exit), and the list to ask the others to close.
+/// Labels of every open window.
 #[tauri::command]
 fn window_labels(app: AppHandle) -> Vec<String> {
     app.webview_windows().into_keys().collect()
+}
+
+#[tauri::command]
+fn primary_window(state: State<'_, PrimaryWindow>) -> String {
+    state
+        .0
+        .lock()
+        .expect("primary window mutex poisoned")
+        .clone()
 }
 
 /// Opens another window in this process — one sidecar, one store, one drafts dir. Cloning
@@ -556,19 +581,44 @@ async fn new_window(app: AppHandle) -> Result<String, String> {
         .ok_or("no window configured")?
         .clone();
 
-    let label = (2..)
-        .map(|n| format!("{MAIN_WINDOW_LABEL}-{n}"))
-        .find(|l| app.get_webview_window(l).is_none())
-        .expect("an unused window label exists");
+    let label = format!(
+        "{MAIN_WINDOW_LABEL}-{}",
+        NEXT_WINDOW_NUMBER.fetch_add(1, Ordering::Relaxed)
+    );
     config.label = label.clone();
 
     let menu = build_menu(&app, &label).map_err(|e| e.to_string())?;
-    tauri::WebviewWindowBuilder::from_config(&app, &config)
+    let window = tauri::WebviewWindowBuilder::from_config(&app, &config)
         .map_err(|e| e.to_string())?
         .menu(menu)
+        .focused(true)
         .build()
         .map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    window.as_ref().set_focus().map_err(|e| e.to_string())?;
     Ok(label)
+}
+
+// Windows may prevent the existing instance from taking focus after a repeat launch.
+// The user-launched process grants it foreground permission before exiting.
+#[cfg(windows)]
+fn allow_existing_instance_foreground(identifier: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId,
+    };
+
+    let class: Vec<u16> = format!("{identifier}-sic")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        let window = FindWindowW(class.as_ptr(), std::ptr::null());
+        if !window.is_null() {
+            let mut process_id = 0;
+            GetWindowThreadProcessId(window, &mut process_id);
+            AllowSetForegroundWindow(process_id);
+        }
+    }
 }
 
 /// Native Save / Don't Save / Cancel prompt. The dialog plugin's JS API tops out at two
@@ -693,7 +743,11 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_file(&port_file);
     let port_file_str = port_file.to_string_lossy().into_owned();
 
-    let exe_name = if cfg!(windows) { SIDECAR_EXE_WINDOWS } else { SIDECAR_EXE_UNIX };
+    let exe_name = if cfg!(windows) {
+        SIDECAR_EXE_WINDOWS
+    } else {
+        SIDECAR_EXE_UNIX
+    };
     let exe_path = app
         .path()
         .resolve(exe_name, BaseDirectory::Resource)
@@ -886,76 +940,79 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     // buffer while scanning for Kestrel's "Now listening on:" marker, and both are type-erased to
     // `Box<dyn AsyncRead + Send + Unpin>` since they are different concrete types.
     use tokio::io::AsyncRead;
-    fn spawn_stream_reader(
-        stream: Box<dyn AsyncRead + Send + Unpin>,
-        label: &'static str,
+    type UrlSender = Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>;
+
+    #[derive(Clone)]
+    struct ReaderContext {
         spawn_started: Instant,
-        tx_url: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>,
+        tx_url: UrlSender,
         app: AppHandle,
         tail: Arc<Mutex<String>>,
         saw_first: Arc<std::sync::atomic::AtomicBool>,
         log_tx: mpsc::Sender<ServerLogLine>,
+    }
+
+    fn spawn_stream_reader(
+        stream: Box<dyn AsyncRead + Send + Unpin>,
+        label: &'static str,
+        ctx: ReaderContext,
     ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if !saw_first.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            eprintln!(
-                                "[sidecar-timing] first stdio byte ({}) after {}ms",
-                                label,
-                                spawn_started.elapsed().as_millis()
-                            );
-                        }
-                        if let Ok(mut t) = tail.lock() {
-                            append_tail(&mut t, &line);
-                            append_tail(&mut t, "\n");
-                        }
-                        // try_send, never send: blocking here is what wedges the sidecar.
-                        let _ = log_tx.try_send(ServerLogLine {
-                            stream: label,
-                            line: line.clone(),
-                        });
-                        if let Some(url) = extract_listening_url(&line) {
-                            let state: State<'_, ServerState> = app.state();
-                            if let Ok(mut g) = state.url.lock() {
-                                *g = Some(url.clone());
-                            }
-                            if let Some(tx) = tx_url.lock().ok().and_then(|mut g| g.take()) {
-                                let _ = tx.send(Ok(url.clone()));
-                            }
-                            let _ = app.emit("server-url", url);
-                        }
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !ctx
+                    .saw_first
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "[sidecar-timing] first stdio byte ({}) after {}ms",
+                        label,
+                        ctx.spawn_started.elapsed().as_millis()
+                    );
+                }
+                if let Ok(mut t) = ctx.tail.lock() {
+                    append_tail(&mut t, &line);
+                    append_tail(&mut t, "\n");
+                }
+                // try_send, never send: blocking here is what wedges the sidecar.
+                let _ = ctx.log_tx.try_send(ServerLogLine {
+                    stream: label,
+                    line: line.clone(),
+                });
+                if let Some(url) = extract_listening_url(&line) {
+                    let state: State<'_, ServerState> = ctx.app.state();
+                    if let Ok(mut g) = state.url.lock() {
+                        *g = Some(url.clone());
                     }
-                    Ok(None) | Err(_) => break,
+                    if let Some(tx) = ctx.tx_url.lock().ok().and_then(|mut g| g.take()) {
+                        let _ = tx.send(Ok(url.clone()));
+                    }
+                    let _ = ctx.app.emit("server-url", url);
                 }
             }
         })
     }
+    let reader_ctx = ReaderContext {
+        spawn_started,
+        tx_url: tx_url.clone(),
+        app: app.clone(),
+        tail: tail.clone(),
+        saw_first: saw_first_output.clone(),
+        log_tx: log_tx.clone(),
+    };
     let mut readers = Vec::new();
     if let Some(s) = stdout {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stdout",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
     if let Some(s) = stderr {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stderr",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
 
@@ -1000,11 +1057,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
                     }
                 })
                 .await;
-                let tail_snapshot = tail
-                    .lock()
-                    .ok()
-                    .map(|t| t.clone())
-                    .unwrap_or_default();
+                let tail_snapshot = tail.lock().ok().map(|t| t.clone()).unwrap_or_default();
                 // The .NET server writes its own crash log via FileLogger, but
                 // duplicate here anyway — if the sidecar died before .NET's
                 // AppDomain.UnhandledException could fire (SIGKILL, StackOverflow,
@@ -1105,9 +1158,9 @@ fn assign_to_job_object(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
 
@@ -1178,11 +1231,23 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         "Export",
         true,
         &[
-            &MenuItem::with_id(app, "export-pdf", "Report PDF...", true, Some("CmdOrCtrl+E"))?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf",
+                "Report PDF...",
+                true,
+                Some("CmdOrCtrl+E"),
+            )?,
             &MenuItem::with_id(app, "export-html", "Report HTML...", true, None::<&str>)?,
             &MenuItem::with_id(app, "export-docx", "Report Word...", true, None::<&str>)?,
             &sep()?,
-            &MenuItem::with_id(app, "export-pdf:preview", "Preview PDF...", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf:preview",
+                "Preview PDF...",
+                true,
+                None::<&str>,
+            )?,
             &MenuItem::with_id(
                 app,
                 "export-html:preview",
@@ -1252,7 +1317,11 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
     if recent_items.is_empty() {
         recent_refs.push(&no_recent);
     } else {
-        recent_refs.extend(recent_items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>));
+        recent_refs.extend(
+            recent_items
+                .iter()
+                .map(|i| i as &dyn IsMenuItem<tauri::Wry>),
+        );
         recent_refs.push(&recent_sep);
         recent_refs.push(&clear_recent);
     }
@@ -1349,8 +1418,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         Some("CmdOrCtrl+P"),
     )?;
-    let toggle_word_wrap =
-        MenuItem::with_id(app, "toggle-word-wrap", "Toggle Word Wrap", true, Some("Alt+Z"))?;
+    let toggle_word_wrap = MenuItem::with_id(
+        app,
+        "toggle-word-wrap",
+        "Toggle Word Wrap",
+        true,
+        Some("Alt+Z"),
+    )?;
     let split_editor = MenuItem::with_id(
         app,
         "split-editor",
@@ -1381,8 +1455,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         None::<&str>,
     )?;
-    let mode_input =
-        MenuItem::with_id(app, "result-mode:ui", "Result Mode: Input", true, None::<&str>)?;
+    let mode_input = MenuItem::with_id(
+        app,
+        "result-mode:ui",
+        "Result Mode: Input",
+        true,
+        None::<&str>,
+    )?;
     let mode_report = MenuItem::with_id(
         app,
         "result-mode:report",
@@ -1430,13 +1509,7 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
                 None::<&str>,
             )?,
             &MenuItem::with_id(app, "stop-server", "Stop Server", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "restart-server",
-                "Restart Server",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "restart-server", "Restart Server", true, None::<&str>)?,
         ],
     )?;
 
@@ -1461,18 +1534,51 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
+    let context = tauri::generate_context!();
+    #[cfg(all(windows, feature = "window-tests"))]
+    let context = {
+        let mut context = context;
+        let port = std::env::var("CALCPAD_TEST_DEBUG_PORT").expect("test debug port is required");
+        for window in &mut context.config_mut().app.windows {
+            let args = window
+                .additional_browser_args
+                .get_or_insert_with(String::new);
+            args.push_str(&format!(" --remote-debugging-port={port}"));
+        }
+        context
+    };
+    #[cfg(windows)]
+    allow_existing_instance_foreground(&context.config().identifier);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                let _ = w.show();
-                let _ = w.set_focus();
-                let _ = w.unminimize();
+            let files = extract_launch_files(argv);
+            if files.is_empty() {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    new_window(app)
+                        .await
+                        .expect("failed to open window for application launch");
+                });
+                return;
             }
-            for path in extract_launch_files(argv) {
+
+            let target = app
+                .state::<FocusedWindow>()
+                .0
+                .lock()
+                .expect("focused window mutex poisoned")
+                .clone();
+            let window = app
+                .get_webview_window(&target)
+                .expect("last focused window is unavailable");
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            for path in files {
                 // The OS handing us this path is the user's consent; no dialog ran.
                 allow_file_and_parent(app, &path);
                 let _ = app.emit_to(
-                    MAIN_WINDOW_LABEL,
+                    &target,
                     "open-file-request",
                     path.to_string_lossy().to_string(),
                 );
@@ -1501,23 +1607,18 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        // Applies the saved geometry after the window is created, so it wins over the
-        // config's `center: true`. StateFlags is spelled out rather than defaulted to
-        // all(): VISIBLE makes the plugin hide-then-show the window on restore, which is
-        // what the GNOME note in setup() below forbids and leaves the webview blank.
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
+                .with_filter(|label| label == MAIN_WINDOW_LABEL)
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
                 .build(),
         )
         .manage(ServerState::default())
         .manage(PendingLaunchFiles::default())
         .manage(FocusedWindow::default())
+        .manage(PrimaryWindow::default())
         .manage(MenuState::default())
+        .menu(|app| build_menu(app, MAIN_WINDOW_LABEL))
         .invoke_handler(tauri::generate_handler![
             server_url,
             server_failure,
@@ -1537,9 +1638,22 @@ pub fn run() {
             set_recent_files,
             confirm_three_way,
             window_labels,
+            primary_window,
             new_window,
         ])
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                for path in paths.iter().filter(|p| is_worksheet_path(p) && p.is_file()) {
+                    allow_file_and_parent(window.app_handle(), path);
+                    window
+                        .emit_to(
+                            window.label(),
+                            "open-file-request",
+                            path.to_string_lossy().to_string(),
+                        )
+                        .expect("failed to emit dropped file request");
+                }
+            }
             tauri::WindowEvent::Focused(true) => {
                 *window
                     .state::<FocusedWindow>()
@@ -1547,8 +1661,6 @@ pub fn run() {
                     .lock()
                     .expect("focused window mutex poisoned") = window.label().to_string();
             }
-            // `new_window` reuses the lowest free `main-N`, so a stale entry would
-            // otherwise seed the next window with the old one's View state.
             tauri::WindowEvent::Destroyed => {
                 window
                     .state::<MenuState>()
@@ -1556,10 +1668,37 @@ pub fn run() {
                     .lock()
                     .expect("menu state mutex poisoned")
                     .remove(window.label());
+
+                let app = window.app_handle();
+                let next = app
+                    .webview_windows()
+                    .into_keys()
+                    .filter(|label| label != window.label())
+                    .min();
+                if let Some(next) = next {
+                    let primary = app.state::<PrimaryWindow>();
+                    let mut primary = primary.0.lock().expect("primary window mutex poisoned");
+                    let changed = *primary == window.label();
+                    if changed {
+                        *primary = next;
+                    }
+                    let focused = app.state::<FocusedWindow>();
+                    let mut focused = focused.0.lock().expect("focused window mutex poisoned");
+                    if *focused == window.label() {
+                        *focused = primary.clone();
+                    }
+                    if changed {
+                        let _ = app.emit("primary-window-changed", primary.clone());
+                    }
+                }
             }
             _ => {}
         })
         .setup(|app| {
+            app.get_webview_window(MAIN_WINDOW_LABEL)
+                .expect("main window exists during setup")
+                .unmaximize()?;
+
             // Pin the on-disk locations the panic hook + draft commands need.
             // app_data_dir is per-user and writable on all supported platforms.
             if let Ok(data_dir) = app.path().app_data_dir() {
@@ -1574,8 +1713,6 @@ pub fn run() {
                 let _ = DRAFTS_DIR.set(drafts);
             }
 
-            let menu = build_menu(app.handle(), MAIN_WINDOW_LABEL)?;
-            app.set_menu(menu)?;
             let handle_for_menu = app.handle().clone();
             // Addressed to the focused window: this handler fires for every window's menu,
             // so a broadcast would run each click and accelerator in all of them at once.
@@ -1623,8 +1760,11 @@ pub fn run() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 if let Ok(drafts) = draft_list() {
                     if !drafts.is_empty() {
-                        let _ =
-                            handle_for_drafts.emit_to(MAIN_WINDOW_LABEL, "drafts-recovered", drafts);
+                        let _ = handle_for_drafts.emit_to(
+                            MAIN_WINDOW_LABEL,
+                            "drafts-recovered",
+                            drafts,
+                        );
                     }
                 }
             });
@@ -1636,7 +1776,10 @@ pub fn run() {
             let launch_files = extract_launch_files(std::env::args());
             if !launch_files.is_empty() {
                 let pending: State<'_, PendingLaunchFiles> = app.state();
-                let mut guard = pending.0.lock().expect("pending launch files mutex poisoned");
+                let mut guard = pending
+                    .0
+                    .lock()
+                    .expect("pending launch files mutex poisoned");
                 for path in launch_files {
                     allow_file_and_parent(app.handle(), &path);
                     guard.push(path.to_string_lossy().to_string());
@@ -1652,7 +1795,7 @@ pub fn run() {
         })
         // No CloseRequested handler: the frontend preventDefaults it, so killing there
         // leaves an open window with a dead server.
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {

@@ -50,6 +50,7 @@ import {
     type InlineImageBudget,
 } from 'calcpad-frontend';
 import { setAppTheme, coerceAppTheme } from '../editor/app-theme';
+import { UNTITLED_TITLE } from '../tabs/tab-manager';
 
 const SETTINGS_DIR_NAME = 'settings';
 const FONTS_DIR_NAME = 'fonts';
@@ -520,7 +521,7 @@ export class TauriMessageBridge extends BaseMessageBridge {
     private getSaveDialogDefaultPath(): string | undefined {
         const activePath = this.activeTabFilePath();
         if (activePath) return activePath;
-        const title = this.activeTabTitle() || 'Untitled';
+        const title = this.activeTabTitle() || UNTITLED_TITLE;
         const name = /\.[^./\\]+$/.test(title) ? title : `${title}.cpd`;
         const dir = this._lastDialogDir;
         return dir ? pathResolve(dir, name) : name;

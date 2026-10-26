@@ -23,6 +23,12 @@
          `.work-area` becomes a column for it, otherwise `display: contents`. -->
     <div class="work-area" :class="{ 'ui-mode': uiModeFullscreen }">
     <div class="editor-pane">
+      <div v-if="draggedFileNames.length && !uiModeFullscreen" class="file-drop-overlay" role="status" aria-live="polite">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M12 11v7m-3-3 3 3 3-3"/>
+        </svg>
+        <span class="file-drop-names">{{ draggedFileNames.join(', ') }}</span>
+      </div>
       <!-- Editor groups, stacked; two when split. -->
       <div class="editor-groups">
         <template v-for="(group, gi) in groups" :key="group.id">
@@ -55,6 +61,7 @@
                   <span v-if="tab.dirty" class="tab-dirty-dot" :title="'Unsaved changes'">●</span>
                   <button
                     class="icon tab-close"
+                    :disabled="tabCount === 1 && tab.filePath === null"
                     :title="tab.dirty ? 'Close (unsaved changes)' : 'Close'"
                     @mousedown.stop
                     @click.stop="onTabClose(group.id, tab.id)"
@@ -582,6 +589,7 @@ import SidebarIcon from 'calcpad-frontend/vue/components/SidebarIcon.vue'
 import {
   extractBodyHtml,
   isCompiledPath,
+  pathBasename,
   parseScrollState,
   previewDiagnosticsScript,
   scrollAnchorScript,
@@ -602,6 +610,8 @@ import {
 import type { ResultMode, WorkspaceLayout } from './services/workspace-state'
 
 const props = withDefaults(defineProps<{ isDesktop?: boolean }>(), { isDesktop: false })
+const draggedFileNames = ref<string[]>([])
+let unlistenFileDrag: (() => void) | undefined
 
 export interface ProblemItem {
   severity: number
@@ -666,6 +676,7 @@ const groups = ref<GroupUi[]>([emptyGroup('g0')])
 const activeGroupId = ref<string>('g0')
 
 const isSplit = computed(() => groups.value.length > 1)
+const tabCount = computed(() => groups.value.reduce((count, group) => count + group.tabs.length, 0))
 const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId.value) ?? groups.value[0])
 
 /** A compiled worksheet has no readable source, so input is the only mode offered. */
@@ -2259,12 +2270,23 @@ onMounted(async () => {
   document.addEventListener('mousedown', onDocumentInteractionForTabMenu)
   document.addEventListener('keydown', onDocumentInteractionForTabMenu)
   window.addEventListener('message', onPreviewWindowMessage)
+  if (props.isDesktop) {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    unlistenFileDrag = await getCurrentWindow().onDragDropEvent(({ payload }) => {
+      if (payload.type === 'enter') {
+        draggedFileNames.value = payload.paths.filter(path => /\.cpdz?$/i.test(path)).map(pathBasename)
+      } else if (payload.type === 'drop' || payload.type === 'leave') {
+        draggedFileNames.value = []
+      }
+    })
+  }
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocumentInteractionForTabMenu)
   document.removeEventListener('keydown', onDocumentInteractionForTabMenu)
   window.removeEventListener('message', onPreviewWindowMessage)
+  unlistenFileDrag?.()
 })
 
 // ---- In-app confirm dialog ----

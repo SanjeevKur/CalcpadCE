@@ -1,10 +1,9 @@
-import {
-    findMetadataCommentBlock,
-    serializeMetadataComment,
-    type MetadataCommentBlock,
-} from '../text/metadata-comment';
+import type { MetadataCommentBlock } from '../text/metadata-comment';
+import { FILE_INFO_KEY, applyLineEdits, findMetadataFooter, planMetadataFooter, type LineEdit } from './metadata-footer';
 
-/** Document-level details kept in a `fileInfo` metadata comment on the file's first line. */
+export { FILE_INFO_KEY };
+
+/** Document-level details kept in a `fileInfo` metadata comment on the file's last line. */
 export interface FileInfo {
     title: string;
     project: string;
@@ -31,16 +30,6 @@ export interface FileInfoStamp {
     now?: Date;
 }
 
-/** Where the comment goes: replace `line..endLine`, or insert above `line` when `isNew`. */
-export interface FileInfoEdit {
-    line: number;
-    endLine: number;
-    text: string;
-    isNew: boolean;
-}
-
-export const FILE_INFO_KEY = 'fileInfo';
-
 export const FILE_INFO_FIELDS: readonly (keyof FileInfo)[] = [
     'title', 'project', 'author', 'createdAt', 'lastUpdatedBy', 'lastUpdatedAt',
     'reviewedBy', 'reviewedAt', 'programVersion',
@@ -54,25 +43,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** The file-info comment, which only counts when it opens on the first line. */
+/** The file-info comment, which only counts as the last non-blank line. */
 export function findFileInfoBlock(lines: string[]): MetadataCommentBlock | null {
-    const block = findMetadataCommentBlock(lines, 0);
-    return block?.valid && block.data && FILE_INFO_KEY in block.data ? block : null;
-}
-
-/**
- * 0-based line span of the file-info comment, reading only as far as the comment
- * runs, so hosts can call it on every edit of a large document.
- */
-export function findFileInfoSpan(lineAt: (index: number) => string, lineCount: number): { start: number; end: number } | null {
-    const lines: string[] = [];
-    for (let i = 0; i < lineCount; i++) {
-        const text = lineAt(i);
-        lines.push(text);
-        if (!/_\s*$/.test(text)) break;
-    }
-    const block = findFileInfoBlock(lines);
-    return block ? { start: block.line, end: block.endLine } : null;
+    return findMetadataFooter(lines).fileInfo;
 }
 
 export function readFileInfo(lines: string[]): FileInfo | null {
@@ -96,28 +69,13 @@ export function sanitizeFileInfoPatch(patch: unknown): Partial<FileInfo> {
     return out;
 }
 
-/** The edit that writes {@link info}, keeping any other keys the comment carries. */
-export function planFileInfoEdit(lines: string[], info: FileInfo): FileInfoEdit {
-    const block = findFileInfoBlock(lines);
-    if (!block?.data)
-        return { line: 0, endLine: 0, text: serializeMetadataComment({ [FILE_INFO_KEY]: info }), isNew: true };
-
-    const existing = block.data[FILE_INFO_KEY];
-    const merged = { ...(isPlainObject(existing) ? existing : {}), ...info };
-    const text = serializeMetadataComment(
-        { ...block.data, [FILE_INFO_KEY]: merged }, block.indent, block.trailingQuote, block.layout);
-    return { line: block.line, endLine: block.endLine, text, isNew: false };
-}
-
-export function applyFileInfoEdit(source: string, edit: FileInfoEdit): string {
-    const eol = source.includes('\r\n') ? '\r\n' : '\n';
-    const lines = source.split(/\r?\n/);
-    lines.splice(edit.line, edit.isNew ? 0 : edit.endLine - edit.line + 1, ...edit.text.split('\n'));
-    return lines.join(eol);
+/** The edits that write {@link info}, keeping any other keys the comment carries. */
+export function planFileInfoEdit(lines: string[], info: FileInfo): LineEdit[] {
+    return planMetadataFooter(lines, { fileInfo: { ...info } });
 }
 
 export function writeFileInfo(source: string, info: FileInfo): string {
-    return applyFileInfoEdit(source, planFileInfoEdit(source.split(/\r?\n/), info));
+    return applyLineEdits(source, planFileInfoEdit(source.split(/\r?\n/), info));
 }
 
 /** File name without its directory or extension. */
@@ -141,7 +99,7 @@ function withoutReview(source: string): string {
     const lines = source.split(/\r?\n/);
     const info = readFileInfo(lines);
     if (!info) return lines.join('\n');
-    return applyFileInfoEdit(lines.join('\n'), planFileInfoEdit(lines, { ...info, reviewedBy: '', reviewedAt: '' }));
+    return applyLineEdits(lines.join('\n'), planFileInfoEdit(lines, { ...info, reviewedBy: '', reviewedAt: '' }));
 }
 
 /** True when {@link current} differs from the {@link saved} file in nothing but its review. */
@@ -172,20 +130,20 @@ export function pdfDocumentTitle(lines: string[], fileName: string): string {
     return readFileInfo(lines)?.title || fileName;
 }
 
-/** The save-time edit for a document, given its current lines. */
-export function planFileInfoStamp(lines: string[], stamp: FileInfoStamp): FileInfoEdit {
+/** The save-time edits for a document, given its current lines; they also move a stray `uiOverrides` down. */
+export function planFileInfoStamp(lines: string[], stamp: FileInfoStamp): LineEdit[] {
     return planFileInfoEdit(lines, stampFileInfo(readFileInfo(lines), stamp));
 }
 
 /** {@link source} as a save would write it, for hosts that hold the text rather than an editor. */
 export function stampFileInfoText(source: string, stamp: FileInfoStamp): string {
-    return applyFileInfoEdit(source, planFileInfoStamp(source.split(/\r?\n/), stamp));
+    return applyLineEdits(source, planFileInfoStamp(source.split(/\r?\n/), stamp));
 }
 
-/** {@link source} with the Info tab's edit applied, or null when it has no file info to edit. */
+/** {@link source} with the Properties tab's file-info edit applied, or null when it has no file info to edit. */
 export function patchFileInfoText(source: string, patch: unknown): string | null {
     const lines = source.split(/\r?\n/);
     const current = readFileInfo(lines);
     if (!current) return null;
-    return applyFileInfoEdit(source, planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) }));
+    return applyLineEdits(source, planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) }));
 }

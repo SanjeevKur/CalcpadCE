@@ -171,11 +171,16 @@ export type { ZipEntry } from './services/zip-writer';
 export { UiOverrideStore, readUiOverrides, writeUiOverrides, extractUiControls, classifyUiOverrides } from './services/ui-overrides';
 export { UiPauseStore, hasPauseSteps } from './services/ui-pause';
 export {
-    FILE_INFO_KEY, FILE_INFO_FIELDS, findFileInfoBlock, findFileInfoSpan, readFileInfo, sanitizeFileInfoPatch,
-    planFileInfoEdit, applyFileInfoEdit, writeFileInfo, stampFileInfo, planFileInfoStamp, fileStem,
+    FILE_INFO_KEY, FILE_INFO_FIELDS, findFileInfoBlock, readFileInfo, sanitizeFileInfoPatch,
+    planFileInfoEdit, writeFileInfo, stampFileInfo, planFileInfoStamp, fileStem,
     stampFileInfoText, patchFileInfoText, savedSinceReview, onlyReviewChanged, pdfDocumentTitle,
 } from './services/file-info';
-export type { FileInfo, FileInfoStamp, FileInfoEdit } from './services/file-info';
+export type { FileInfo, FileInfoStamp } from './services/file-info';
+export {
+    UI_OVERRIDES_KEY, METADATA_ANCHOR, METADATA_FOLDED_TEXT, METADATA_LINE_TEXT, findMetadataFooter, findMetadataFooterSpan, findMetadataFoldSpan, findStrayUiOverrides, planMetadataFooter,
+    applyLineEdits, toRangeEdits, keepSelectionOutOfSpan,
+} from './services/metadata-footer';
+export type { LineEdit, RangeEdit, MetadataFooter, FooterChanges, LinePosition } from './services/metadata-footer';
 export {
     isCompiledPath,
     inlineImageSources,

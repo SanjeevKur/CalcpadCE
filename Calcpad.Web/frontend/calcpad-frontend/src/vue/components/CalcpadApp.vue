@@ -119,6 +119,7 @@
         :initial-active-config="activeConfig"
         :initial-available-configs="availableConfigs"
         :initial-editor-font-family="editorFontFamily"
+        :initial-completion-delay-ms="completionDelayMs"
         :initial-available-fonts="availableFonts"
         :initial-user-name="userName"
         :focus-request="settingFocus?.paneId === pane.id ? settingFocus : null"
@@ -151,6 +152,7 @@
         @open-fonts-folder="handleOpenFontsFolder"
         @refresh-fonts="handleRefreshFonts"
         @update-editor-font-family="handleUpdateEditorFontFamily"
+        @update-completion-delay-ms="handleUpdateCompletionDelayMs"
         @update-user-name="handleUpdateUserName"
       />
       <CalcpadVariablesTab
@@ -197,23 +199,23 @@
         v-else-if="pane.activeTab === 'metadata'"
         :block="metadataBlock"
         :ui-controls="uiControls"
-        @apply="handleApplyMetadata"
-        @go-to-line="handleGoToLine"
-        @refresh-ui-controls="handleRefreshUiControls"
-        @draft-dirty="handleMetadataDraftDirty"
-      />
-      <CalcpadInfoTab
-        v-else-if="pane.activeTab === 'info'"
-        :info="fileInfo"
+        :file-info="fileInfo"
+        :saved-ui-overrides="savedUiOverrides"
         :has-document="fileInfoHasDocument"
         :doc-key="fileInfoDocKey"
         :user-name="userName"
-        :show-line="showFileInfoLine"
-        @update="handleUpdateFileInfo"
+        :source-unavailable="inputMode"
+        :source-unavailable-note="INPUT_MODE_NOTE"
+        @apply="handleApplyMetadata"
+        @go-to-line="handleGoToLine"
+        @refresh-ui-controls="handleRefreshUiControls"
+        @draft-dirty="handleDraftDirty($event, 'properties')"
+        @update-file-info="handleUpdateFileInfo"
         @mark-reviewed="postMessage({ type: 'markFileReviewed' })"
-        @update-show-line="handleUpdateShowFileInfoLine"
         @open-settings="openSetting(pane, 'user', 'userName')"
-        @draft-dirty="handleInfoDraftDirty"
+        @file-info-draft-dirty="handleDraftDirty($event, 'info')"
+        @update-ui-overrides="handleUpdateUiOverrides"
+        @ui-overrides-draft-dirty="handleDraftDirty($event, 'uiOverrides')"
       />
     </div>
     </div>
@@ -234,7 +236,6 @@ import CalcpadExportTab from './CalcpadExportTab.vue'
 import CalcpadFilesTab from './CalcpadFilesTab.vue'
 import CalcpadErrorsTab from './CalcpadErrorsTab.vue'
 import CalcpadMetadataTab from './CalcpadMetadataTab.vue'
-import CalcpadInfoTab from './CalcpadInfoTab.vue'
 import { postMessage } from '../services/messaging'
 import type { FileInfo } from '../../services/file-info'
 import type { MetadataCommentBlock, MetadataCommentData, SettingsValues } from '../../text/metadata-comment'
@@ -245,7 +246,7 @@ import type { Tab, InsertItem, Settings, VariablesData, PdfSettings, TocHeading,
 import { DEFAULT_VERSION_CONFIG } from '../types'
 import type { CalcpadError, ExportVariant } from '../../types/api'
 import type { WriteMode } from '../../types/settings'
-import { coerceWriteMode } from '../../types/settings'
+import { coerceWriteMode, DEFAULT_COMPLETION_DELAY_MS } from '../../types/settings'
 import { DEFAULT_PDF_SETTINGS } from '../types'
 import {
   DEFAULT_PREVIEW_SIZE_MB, MIN_PREVIEW_SIZE_MB,
@@ -310,6 +311,7 @@ const maxPreviewConsoleMessages = ref(DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT)
 const activeConfig = ref('default')
 const availableConfigs = ref<string[]>(['default'])
 const editorFontFamily = ref('JuliaMono')
+const completionDelayMs = ref(DEFAULT_COMPLETION_DELAY_MS)
 const availableFonts = ref<string[]>([])
 const variablesData = ref<VariablesData>({
   macros: [],
@@ -326,8 +328,8 @@ const prettifyIndentSize = ref(4)
 const prettifyTrimTrailing = ref(true)
 
 const userName = ref('')
-const showFileInfoLine = ref(false)
 const fileInfo = ref<FileInfo | null>(null)
+const savedUiOverrides = ref<Record<string, string>>({})
 const fileInfoHasDocument = ref(false)
 const fileInfoDocKey = ref('')
 
@@ -349,7 +351,6 @@ const tabs = computed<Tab[]>(() => {
   // in the VS Code webview and the desktop app (both host a real editor).
   // File info is stamped on save, which only those two hosts have.
   if (props.versionConfig.isVSCode || props.versionConfig.isDesktop) {
-    base.unshift({ id: 'info', label: 'Info' })
     base.push({ id: 'metadata', label: 'Properties' })
   }
   return base
@@ -372,10 +373,10 @@ panes.value[0].activeTab = storedStartTab()
  * Input mode fills a worksheet in rather than editing it — the host hides the editor,
  * and for a compiled worksheet there is no source behind it at all. The tabs that act
  * on source have nothing to act on there, so their content is shown inert: TOC, Export,
- * Settings and Info still work, since a filled-in worksheet is still navigated, exported
- * and reviewed.
+ * Settings and Properties' File Info still work, since a filled-in worksheet is still
+ * navigated, exported and reviewed.
  */
-const SOURCE_TABS = ['insert', 'variables', 'formatting', 'errors', 'metadata']
+const SOURCE_TABS = ['insert', 'variables', 'formatting', 'errors']
 const INPUT_MODE_NOTE = 'Unavailable in input mode — this acts on the document source, which the input form does not edit.'
 const inputMode = ref(false)
 const tabUnavailable = (tabId: string) => inputMode.value && SOURCE_TABS.includes(tabId)
@@ -492,13 +493,9 @@ const activateTab = (pane: Pane, tabId: string) => {
     postMessage({ type: 'getPrettifySettings' })
   }
 
-  // Refresh the metadata comment at the cursor when opening the Metadata tab
   if (tabId === 'metadata') {
     postMessage({ type: 'getMetadataContext' })
-  }
-
-  if (tabId === 'info') {
-    postMessage({ type: 'getFileInfo' })
+    postMessage({ type: 'getDocumentMetadata' })
   }
 
   // Fetch the current document's plots the first time the Export tab is opened.
@@ -714,18 +711,22 @@ const handleUpdateEditorFontFamily = (family: string) => {
   postMessage({ type: 'updateEditorFontFamily', family })
 }
 
+const handleUpdateCompletionDelayMs = (delayMs: number) => {
+  completionDelayMs.value = delayMs
+  postMessage({ type: 'updateCompletionDelayMs', completionDelayMs: delayMs })
+}
+
 const handleUpdateUserName = (value: string) => {
   userName.value = value
   postMessage({ type: 'updateUserName', value })
 }
 
-const handleUpdateShowFileInfoLine = (enabled: boolean) => {
-  showFileInfoLine.value = enabled
-  postMessage({ type: 'updateShowFileInfoLine', enabled })
-}
-
 const handleUpdateFileInfo = (patch: Partial<FileInfo>) => {
   postMessage({ type: 'updateFileInfo', patch })
+}
+
+const handleUpdateUiOverrides = (overrides: Record<string, string>) => {
+  postMessage({ type: 'updateUiOverrides', overrides })
 }
 
 const handleUpdatePdfSettings = (settings: PdfSettings) => {
@@ -817,12 +818,8 @@ const handleApplyMetadata = (payload: { data: MetadataCommentData; settings: Set
   })
 }
 
-const handleMetadataDraftDirty = (payload: { docKey: string; dirty: boolean }) => {
-  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form: 'properties' })
-}
-
-const handleInfoDraftDirty = (payload: { docKey: string; dirty: boolean }) => {
-  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form: 'info' })
+const handleDraftDirty = (payload: { docKey: string; dirty: boolean }, form: 'properties' | 'info' | 'uiOverrides') => {
+  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form })
 }
 
 // Message handler
@@ -862,17 +859,21 @@ const handleMessage = (event: MessageEvent) => {
       if (message.activeConfig) activeConfig.value = message.activeConfig
       if (Array.isArray(message.availableConfigs)) availableConfigs.value = message.availableConfigs
       if (typeof message.editorFontFamily === 'string') editorFontFamily.value = message.editorFontFamily
+      completionDelayMs.value = message.completionDelayMs
       if (Array.isArray(message.availableFonts)) availableFonts.value = message.availableFonts
       if (typeof message.userName === 'string') userName.value = message.userName
-      if (typeof message.showFileInfoLine === 'boolean') showFileInfoLine.value = message.showFileInfoLine
       break
-    case 'fileInfo':
+    case 'documentMetadata':
       fileInfo.value = message.info ?? null
+      savedUiOverrides.value = message.uiOverrides && typeof message.uiOverrides === 'object' ? message.uiOverrides : {}
       fileInfoHasDocument.value = !!message.hasDocument
       fileInfoDocKey.value = String(message.docKey ?? '')
       break
     case 'editorFontFamilyChanged':
       if (typeof message.family === 'string') editorFontFamily.value = message.family
+      break
+    case 'completionDelayMsChanged':
+      completionDelayMs.value = message.completionDelayMs
       break
     case 'availableFontsChanged':
       if (Array.isArray(message.availableFonts)) availableFonts.value = message.availableFonts

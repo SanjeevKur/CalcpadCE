@@ -57,29 +57,36 @@
       <div v-else-if="displayItems.length === 0" class="no-items">
         No insert items available
       </div>
-      <select
+      <div
         v-else-if="searchQuery"
         ref="searchResults"
-        v-model="selectedResultIndex"
-        :size="Math.max(2, displayItems.length)"
         class="insert-results"
+        role="listbox"
         aria-label="Insert search results"
+        @keydown.down.exact.prevent.stop="focusResult(Math.min(selectedResultIndex + 1, filteredItems.length - 1))"
+        @keydown.up.exact.prevent.stop="focusResult(Math.max(selectedResultIndex - 1, 0))"
+        @keydown.home.exact.prevent.stop="focusResult(0)"
+        @keydown.end.exact.prevent.stop="focusResult(filteredItems.length - 1)"
+        @keydown.space.prevent.stop
         @keydown.enter.prevent.stop="!$event.repeat && insertSelectedResult()"
       >
-        <option
+        <div
           v-for="(item, index) in displayItems"
           :key="itemKeys.get(item)"
-          :value="index"
+          class="insert-result"
+          role="option"
+          :aria-selected="selectedResultIndex === index"
+          :tabindex="index === Math.max(selectedResultIndex, 0) ? 0 : -1"
           @focus="selectedResultIndex = index"
-          @click.prevent="selectedResultIndex = index"
+          @click="focusResult(index)"
           @dblclick.prevent="insertItem(item)"
           :title="buildTooltip(item)"
         >
           <CalcpadSearchHighlight class="item-display" :text="formatDisplayText(item)" :query="searchQuery" />
           <CalcpadSearchHighlight v-if="formatSecondaryText(item)" class="item-description" :text="formatSecondaryText(item)" :query="searchQuery" />
           <CalcpadSearchHighlight v-if="item.categoryPath" class="item-category" :text="item.categoryPath" :query="searchQuery" />
-        </option>
-      </select>
+        </div>
+      </div>
       <div v-else>
         <div id="tree-container">
           <!-- Tree structure will be built here -->
@@ -116,7 +123,7 @@ const emit = defineEmits<{
 // State
 const searchTerm = ref('')
 const searchField = ref<InstanceType<typeof CalcpadSearchField> | null>(null)
-const searchResults = ref<HTMLSelectElement | null>(null)
+const searchResults = ref<HTMLDivElement | null>(null)
 const selectedResultIndex = ref(-1)
 const searchQuery = computed(() => searchTerm.value.trim())
 defineExpose({ focusSearch: () => searchField.value!.focus() })
@@ -382,7 +389,9 @@ const focusResult = async (index: number) => {
   if (!searchQuery.value || filteredItems.value.length === 0) return
   selectedResultIndex.value = index
   await nextTick()
-  searchResults.value!.options[index].focus()
+  const result = searchResults.value!.querySelectorAll<HTMLElement>('[role="option"]')[index]
+  result.focus({ preventScroll: true })
+  result.scrollIntoView({ block: 'nearest' })
 }
 
 const enterResults = (event: KeyboardEvent, index: number) => {
@@ -681,19 +690,18 @@ watch(
 }
 
 .insert-results {
-  appearance: base-select;
   display: block;
   overflow: visible;
   height: max-content;
   width: 100%;
-  padding: 0;
+  padding: 4px;
   border: none;
   color: inherit;
   background: transparent;
   font: inherit;
 }
 
-.insert-results option {
+.insert-result {
   display: block;
   width: 100%;
   white-space: normal;
@@ -703,25 +711,22 @@ watch(
   text-align: left;
   padding: 8px;
   margin: 2px 0;
+  scroll-margin: 4px;
   border: 1px solid var(--vscode-widget-border);
   border-radius: 3px;
   cursor: default;
   background: var(--vscode-editor-background);
 }
 
-.insert-results option:checked {
+.insert-result[aria-selected="true"] {
   border-color: var(--vscode-focusBorder);
 }
 
-.insert-results option:focus-visible {
+.insert-result:focus {
   position: relative;
   z-index: 1;
   outline: 2px solid var(--vscode-focusBorder);
   outline-offset: 2px;
-}
-
-.insert-results option::checkmark {
-  display: none;
 }
 
 .item-display,

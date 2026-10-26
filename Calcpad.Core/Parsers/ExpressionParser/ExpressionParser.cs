@@ -275,11 +275,14 @@ namespace Calcpad.Core
                             _parser.IsPlotting = true;
                             var s1 = plotParser.Parse(s, _calculate);
                             _sb.Append(InsertAttribute(s1, HtmlId));
-                            _parser.IsPlotting = false;
                         }
                         catch (MathParserException ex)
                         {
                             AppendError(s.ToString(), ex.Message, _currentLine);
+                        }
+                        finally
+                        {
+                            _parser.IsPlotting = false;
                         }
                     }
                     return true;

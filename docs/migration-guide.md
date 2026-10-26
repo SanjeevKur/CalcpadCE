@@ -46,7 +46,7 @@ Declare the input with `#UI` and give it an ordinary value:
 #UI L = 6m
 ```
 
-Entering a value in the input form is stored in a `uiOverrides` entry on the first line of the CalcpadCE file, so the file keeps its own default values and they stay unchanged when input fields are updated.
+Entering a value in the input form is stored in a `uiOverrides` entry at the end of the CalcpadCE file, so the file keeps its own default values and they stay unchanged when input fields are updated.
 You never have to write that entry yourself, but it is plain text if you ever want to edit it.
 
 ### `%u` in comments is removed

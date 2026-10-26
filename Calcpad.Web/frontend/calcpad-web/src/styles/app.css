@@ -98,10 +98,40 @@ select option {
 }
 
 .editor-pane {
+    position: relative;
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
+}
+
+.file-drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    padding: 1.5rem;
+    background: color-mix(in oklch, var(--vscode-editorWidget-background) 95%, transparent);
+    color: var(--vscode-editorWidget-foreground);
+    pointer-events: none;
+}
+
+.file-drop-overlay svg {
+    width: 7rem;
+    height: 7rem;
+}
+
+.file-drop-names {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 2rem;
+    font-weight: 600;
 }
 
 .spacer {
@@ -403,9 +433,14 @@ button.tab-close {
     line-height: 1;
 }
 
-button.tab-close:hover {
+button.tab-close:hover:not(:disabled) {
     background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
     color: inherit;
+}
+
+button.tab-close:disabled {
+    opacity: 0.2;
+    cursor: default;
 }
 
 .tab-dirty-dot {
@@ -983,7 +1018,7 @@ button.modal-btn {
 }
 
 /* Status bar */
-.status-bar {
+#app > .status-bar {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -996,7 +1031,7 @@ button.modal-btn {
     user-select: none;
 }
 
-.status-bar:hover {
+#app > .status-bar:hover {
     background: var(--vscode-statusBar-hoverBackground, #1f8ad2);
 }
 

@@ -215,12 +215,12 @@ export const LINT_CODES: LintCode[] = [
     { code: 'CPD-3413', description: 'Invalid #settings JSON' },
     { code: 'CPD-3414', description: 'Invalid PDF settings in a metadata comment' },
     { code: 'CPD-3415', description: 'Invalid #UI format' },
-    { code: 'CPD-3416', description: "'uiOverrides' metadata comment not at the top of the file" },
+    { code: 'CPD-3416', description: "'uiOverrides' metadata comment not at the end of the file" },
     { code: 'CPD-3417', description: "Duplicate 'uiOverrides' metadata comment" },
     { code: 'CPD-3418', description: "'uiOverrides' sharing a comment with another key" },
     { code: 'CPD-3419', description: 'Deprecated stored input value' },
     { code: 'CPD-3420', description: 'Deprecated #input keyword' },
-    { code: 'CPD-3421', description: "'fileInfo' metadata comment not on the first line" },
+    { code: 'CPD-3421', description: "'fileInfo' metadata comment not on the last line" },
     { code: 'CPD-3601', description: 'Invalid format specifier' },
 ];
 

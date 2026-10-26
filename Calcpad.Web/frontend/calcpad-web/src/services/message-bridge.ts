@@ -78,6 +78,11 @@ export class MessageBridge extends BaseMessageBridge {
     protected resetSettingsBackend(): void {
         this.settings = getDefaultSettings();
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+        localStorage.removeItem(extraKey('completionDelayMs'));
+    }
+
+    protected async afterResetSettings(): Promise<void> {
+        await this.handleGetSettings();
     }
 
     protected coerceColorTheme(raw: string | undefined | null): string {

@@ -13,7 +13,7 @@ namespace Calcpad.Core
             internal readonly HashSet<string> DefinedVariables = new(StringComparer.Ordinal);
             private static readonly TokenTypes[] CharTypes = new TokenTypes[127];
             private readonly MathParser _parser;
-            private readonly bool _isComplex;
+            private bool _isComplex => _parser._settings.IsComplex;
             private readonly Container<CustomFunction> _functions;
             private readonly List<SolverBlock> _solveBlocks;
             private readonly Dictionary<string, Variable> _variables;
@@ -60,7 +60,6 @@ namespace Calcpad.Core
                 _solveBlocks = parser._solveBlocks;
                 _variables = parser._variables;
                 _units = parser._units;
-                _isComplex = parser._settings.IsComplex;
                 _localVariables.Push(_variables); // Global variables will be always on the bottom of stack
                 DefineVariables();
             }
@@ -496,7 +495,8 @@ namespace Calcpad.Core
                         if (n < len)
                         {
                             var unit = expression[n..];
-                            if (unit.Contains('}'))
+                            // Inside an unclosed command block, ':' separates its limits
+                            if (unit.Contains('}') || expression[..n].Count('{') > expression[..n].Count('}'))
                             {
                                 n = len;
                                 _parser._targetUnits = null;
@@ -960,8 +960,8 @@ namespace Calcpad.Core
             private int AddSolver(string script, SolverBlock.SolverTypes st)
             {
                 ++_parser._isSolver;
-                _solveBlocks.Add(new SolverBlock(script, st, _parser));
-                --_parser._isSolver;
+                try { _solveBlocks.Add(new SolverBlock(script, st, _parser)); }
+                finally { --_parser._isSolver; }
                 return _solveBlocks.Count - 1;
             }
 

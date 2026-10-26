@@ -55,8 +55,8 @@
         "writeMode": "reportOnly",
         "dotnetPath": "dotnet",
         "editorFontFamily": "JuliaMono",
+        "completionDelayMs": 500,
         "userName": "",
-        "showFileInfoLine": false,
         "pdfSettings": {
             "format": "Letter",
             "orientation": "portrait",

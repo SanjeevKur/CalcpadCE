@@ -1,44 +1,40 @@
 <template>
-  <div class="info-tab">
-    <div class="info-container">
-      <p v-if="!userName" class="note">
-        No user name is set, so saves and reviews won't record who made them.
-        <button class="link-button" @click="emit('open-settings')">Set it in Settings</button>
-      </p>
+  <div class="file-info-section">
+    <p v-if="!userName" class="note">
+      No user name is set, so saves and reviews won't record who made them.
+      <button class="link-button" @click="emit('open-settings')">Set it in Settings</button>
+    </p>
 
-      <p v-if="!hasDocument" class="note">No document is open.</p>
-      <p v-else-if="!info" class="note">File info is added to line 1 the first time this file is saved.</p>
+    <p v-if="!hasDocument" class="note">No document is open.</p>
+    <p v-else-if="!info" class="note">File info is added to the last line the first time this file is saved.</p>
 
-      <template v-else>
-        <h3 class="section-title">
-          File Information
-          <span v-if="dirty" class="dirty-mark" title="Unsaved changes - Apply or Reset">*</span>
-        </h3>
-        <div class="field">
-          <label for="fileInfoTitle">
-            Title
-            <span class="setting-info" title="Also the header title of PDF exports, unless the Title PDF setting hides it. Set to the file name on first save.">ⓘ</span>
-          </label>
-          <input id="fileInfoTitle" v-model="draft.title" type="text" @keyup.enter="apply" />
-        </div>
-        <div class="field">
-          <label for="fileInfoProject">Project</label>
-          <input id="fileInfoProject" v-model="draft.project" type="text" placeholder="(none)" @keyup.enter="apply" />
-        </div>
-        <div class="actions">
-          <button :disabled="!dirty" @click="apply">Apply</button>
-          <button class="secondary" :disabled="!dirty" @click="reset">Reset</button>
-        </div>
+    <template v-else>
+      <div v-show="rowVisible('title')" class="field">
+        <label for="fileInfoTitle">
+          <CalcpadSearchHighlight text="Title" :query="query" />
+          <span class="setting-info" title="Also the header title of PDF exports, unless the Title PDF setting hides it. Set to the file name on first save.">ⓘ</span>
+        </label>
+        <input id="fileInfoTitle" v-model="draft.title" type="text" @keyup.enter="apply" />
+      </div>
+      <div v-show="rowVisible('project')" class="field">
+        <label for="fileInfoProject"><CalcpadSearchHighlight text="Project" :query="query" /></label>
+        <input id="fileInfoProject" v-model="draft.project" type="text" placeholder="(none)" @keyup.enter="apply" />
+      </div>
+      <div v-show="rowVisible('title') || rowVisible('project')" class="actions">
+        <button :disabled="!dirty" @click="apply">Apply</button>
+        <button class="secondary" :disabled="!dirty" @click="reset">Reset</button>
+      </div>
 
-        <dl class="details">
-          <dt>Author</dt><dd>{{ info.author || '—' }}</dd>
-          <dt>Created</dt><dd>{{ formatTimestamp(info.createdAt) }}</dd>
-          <dt>Last updated</dt><dd>{{ formatTimestamp(info.lastUpdatedAt) }}</dd>
-          <dt>Last updated by</dt><dd>{{ info.lastUpdatedBy || '—' }}</dd>
-          <dt>Program version</dt><dd>{{ info.programVersion || '—' }}</dd>
-        </dl>
+      <dl v-show="rowVisible('details')" class="details">
+        <dt>Author</dt><dd>{{ info.author || '—' }}</dd>
+        <dt>Created</dt><dd>{{ formatTimestamp(info.createdAt) }}</dd>
+        <dt>Last updated</dt><dd>{{ formatTimestamp(info.lastUpdatedAt) }}</dd>
+        <dt>Last updated by</dt><dd>{{ info.lastUpdatedBy || '—' }}</dd>
+        <dt>Program version</dt><dd>{{ info.programVersion || '—' }}</dd>
+      </dl>
 
-        <h3 class="section-title">Review</h3>
+      <div v-show="rowVisible('review')">
+        <h4 class="sub-title"><CalcpadSearchHighlight text="Review" :query="query" /></h4>
         <dl class="details">
           <dt>Reviewed by</dt><dd>{{ info.reviewedBy || 'Not reviewed' }}</dd>
           <dt>Reviewed</dt><dd>{{ formatTimestamp(info.reviewedAt) }}</dd>
@@ -61,21 +57,14 @@
             Clear Review
           </button>
         </div>
-      </template>
-
-      <div class="form-row show-line-row">
-        <label class="checkbox-label">
-          <input type="checkbox" :checked="showLine" @change="onShowLineChange" />
-          Show file info line in editor
-          <span class="setting-info" title="The file info comment on line 1 is hidden by default so it isn't changed by accident. Edit it here instead.">ⓘ</span>
-        </label>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, watch } from 'vue'
+import CalcpadSearchHighlight from './CalcpadSearchHighlight.vue'
 import { savedSinceReview } from '../../services/file-info'
 import type { FileInfo } from '../../services/file-info'
 import { getFileInfoDraft, setFileInfoDraft, clearFileInfoDraft, metadataDraftDiscarded } from '../metadata-drafts'
@@ -87,7 +76,8 @@ interface Props {
   /** Identifies the document `info` came from, so an unapplied draft stays with it. */
   docKey?: string
   userName?: string
-  showLine?: boolean
+  query?: string
+  rowVisible?: (key: string) => boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -95,13 +85,13 @@ const props = withDefaults(defineProps<Props>(), {
   hasDocument: false,
   docKey: '',
   userName: '',
-  showLine: false,
+  query: '',
+  rowVisible: () => true,
 })
 
 const emit = defineEmits<{
   'update': [patch: Partial<FileInfo>]
   'mark-reviewed': []
-  'update-show-line': [enabled: boolean]
   'open-settings': []
   'draft-dirty': [payload: { docKey: string; dirty: boolean }]
 }>()
@@ -171,10 +161,6 @@ function clearReview() {
   emit('update', { reviewedBy: '', reviewedAt: '' })
 }
 
-function onShowLineChange(e: Event) {
-  emit('update-show-line', (e.target as HTMLInputElement).checked)
-}
-
 function formatTimestamp(iso: string): string {
   if (!iso) return '—'
   const date = new Date(iso)
@@ -183,26 +169,9 @@ function formatTimestamp(iso: string): string {
 </script>
 
 <style scoped>
-.info-tab {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.info-container {
-  overflow-y: auto;
-  flex: 1;
-  padding: 12px;
-  color: var(--vscode-foreground);
-}
-
-.section-title {
+.sub-title {
   margin: 16px 0 8px 0;
   font-weight: 600;
-}
-
-.info-container > :first-child {
-  margin-top: 0;
 }
 
 .actions + .details {
@@ -213,32 +182,6 @@ function formatTimestamp(iso: string): string {
   margin: 0 0 8px 0;
   color: var(--vscode-editorWarning-foreground, #cca700);
   line-height: 1.5;
-}
-
-.dirty-mark {
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  cursor: help;
-}
-
-.form-row {
-  margin-bottom: 12px;
-}
-
-.show-line-row {
-  margin-top: 20px;
-  padding-top: 12px;
-  border-top: 1px solid var(--vscode-widget-border);
-}
-
-.checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
-.checkbox-label input[type="checkbox"] {
-  margin: 0;
 }
 
 .setting-info {

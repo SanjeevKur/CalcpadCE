@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { pdfResponseError, isBrowserNotFound, isBrowserLaunchFailed, installPdfBrowser, CalcpadApiClient, combineSignals, resolveEffectivePdfSettings, pdfSettingsFromDocument, parseConvertErrorHeader, parseConvertPauseHeader, findMetadataCommentBlock, serializeMetadataComment, computeMetadataBlock, buildSourceDefinitionResolver, extractBodyHtml, UiOverrideStore, UiPauseStore, hasPauseSteps, writeUiOverrides, extractUiControls, variantRender, inlineImageSources, createReferenceResolver, isCompiledPath, documentHasUiDirectives, COMPILED_EXTENSION, MAX_COMPILED_IMAGE_TOTAL_BYTES, DEFAULT_PREVIEW_SIZE_MB, DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT, MAX_HTML_MIRROR_CHARS, MAX_INLINE_IMAGE_TOTAL_BYTES, previewSizeLimitChars, previewLimitNoticeHtml, formatSize, truncateForOutput, consoleRelayGuardScript, coerceLogLevel, setLogLevel, getLogLevel, ConnectionMonitor , getParseModeAt, findFileInfoSpan, planFileInfoStamp, stampFileInfoText, onlyReviewChanged, pdfDocumentTitle } from 'calcpad-frontend';
-import type { PdfSettings as FrontendPdfSettings, ExportVariant, UiControl, UiOverrides, CalcpadError } from 'calcpad-frontend';
+import { pdfResponseError, isBrowserNotFound, isBrowserLaunchFailed, installPdfBrowser, CalcpadApiClient, combineSignals, resolveEffectivePdfSettings, pdfSettingsFromDocument, parseConvertErrorHeader, parseConvertPauseHeader, findMetadataCommentBlock, serializeMetadataComment, computeMetadataBlock, buildSourceDefinitionResolver, extractBodyHtml, UiOverrideStore, UiPauseStore, hasPauseSteps, writeUiOverrides, extractUiControls, variantRender, inlineImageSources, createReferenceResolver, isCompiledPath, documentHasUiDirectives, COMPILED_EXTENSION, MAX_COMPILED_IMAGE_TOTAL_BYTES, DEFAULT_PREVIEW_SIZE_MB, DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT, MAX_HTML_MIRROR_CHARS, MAX_INLINE_IMAGE_TOTAL_BYTES, previewSizeLimitChars, previewLimitNoticeHtml, formatSize, truncateForOutput, consoleRelayGuardScript, coerceLogLevel, setLogLevel, getLogLevel, ConnectionMonitor , getParseModeAt, toRangeEdits, planFileInfoStamp, stampFileInfoText, onlyReviewChanged, pdfDocumentTitle } from 'calcpad-frontend';
+import type { PdfSettings as FrontendPdfSettings, ExportVariant, UiControl, UiOverrides, CalcpadError, LineEdit } from 'calcpad-frontend';
 import { CalcpadServerLinter } from './calcpadServerLinter';
 import { CalcpadSemanticTokensProvider, semanticTokensLegend } from './calcpadSemanticTokensProvider';
 import { CalcpadVueUIProvider } from './calcpadVueUIProvider';
@@ -27,6 +27,7 @@ import { DotnetRuntimeManager } from './dotnetRuntimeManager';
 import { VSCodeLogger, VSCodeFileSystem } from './adapters';
 import { expandEnvVars } from './calcpadLocationResolver';
 import { installJuliaMonoCommand, maybePromptInstall } from './installFont';
+import { MetadataFooterView } from './metadataFooterView';
 import { renderIntoShell, setShellLoading, getFrameAgentScript, frameStateFor, handleFrameStateMessage, lastRenderedHtml, copyPreviewSelection } from './previewFrame';
 
 // The wrapped ("regular") and unwrapped previews are independent panels that can
@@ -196,29 +197,6 @@ function fileInfoStamper(): { userName: string; programVersion: string } {
     return { userName: CalcpadSettingsManager.getInstance().getExtra('userName', ''), programVersion: extensionVersion };
 }
 
-// VS Code has no API for hiding a line, so the file-info comment's text is collapsed behind a placeholder.
-let fileInfoDecoration: vscode.TextEditorDecorationType | undefined = undefined;
-
-function refreshFileInfoDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors): void {
-    if (!fileInfoDecoration) return;
-    const show = CalcpadSettingsManager.getInstance().getExtraBool('showFileInfoLine', false);
-    for (const editor of editors) {
-        const document = editor.document;
-        if (document.languageId !== 'calcpad') continue;
-        const span = show ? null : findFileInfoSpan(i => document.lineAt(i).text, document.lineCount);
-        const options: vscode.DecorationOptions[] = [];
-        for (let line = span?.start ?? 0; span && line <= span.end; line++) {
-            options.push({
-                range: document.lineAt(line).range,
-                renderOptions: line === span.start
-                    ? { before: { contentText: '⋯ file info hidden (see Info tab)', color: new vscode.ThemeColor('editorCodeLens.foreground'), fontStyle: 'italic' } }
-                    : undefined,
-            });
-        }
-        editor.setDecorations(fileInfoDecoration, options);
-    }
-}
-
 /**
  * Whether a document about to be saved gets its file-info comment stamped. An unchanged file
  * is not an update, and an untitled one leaves the title for its first save under a real name.
@@ -239,15 +217,18 @@ async function savedTextOf(document: vscode.TextDocument): Promise<string | unde
 
 async function fileInfoStampEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
     const saved = await savedTextOf(document);
-    const edit = planFileInfoStamp(document.getText().split(/\r?\n/), {
+    const edits = planFileInfoStamp(document.getText().split(/\r?\n/), {
         ...fileInfoStamper(),
         fileName: document.isUntitled ? '' : document.fileName,
         reviewOnly: saved !== undefined && onlyReviewChanged(saved, document.getText()),
     });
+    return metadataTextEdits(document, edits);
+}
+
+function metadataTextEdits(document: vscode.TextDocument, edits: LineEdit[]): vscode.TextEdit[] {
     const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-    return [edit.isNew
-        ? vscode.TextEdit.insert(new vscode.Position(0, 0), edit.text + eol)
-        : vscode.TextEdit.replace(document.lineAt(edit.line).range.with({ end: document.lineAt(edit.endLine).range.end }), edit.text)];
+    return toRangeEdits(edits, document.lineCount, i => document.lineAt(i).text.length, eol).map(r =>
+        vscode.TextEdit.replace(new vscode.Range(r.startLine, r.startCharacter, r.endLine, r.endCharacter), r.text));
 }
 
 /**
@@ -2144,7 +2125,7 @@ export async function activate(context: vscode.ExtensionContext) {
             outputChannel,
         );
         compiledEditor.fileInfoStamp = fileInfoStamper;
-        compiledEditor.onDidWrite = () => vueUiProvider?.refreshFileInfo();
+        compiledEditor.onDidWrite = () => vueUiProvider?.refreshDocumentMetadata();
 
     // Unified document processing function
     let isProcessingDocument = false;
@@ -2319,9 +2300,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await vscode.commands.executeCommand('workbench.action.files.save');
         return !compiledEditor.isDirty(uri);
     };
-    fileInfoDecoration = vscode.window.createTextEditorDecorationType({ textDecoration: 'none; display: none;' });
-    vueUiProvider.onShowFileInfoLineChanged = () => refreshFileInfoDecorations();
-    refreshFileInfoDecorations();
+    context.subscriptions.push(new MetadataFooterView());
     const vueUiProviderDisposable = vscode.window.registerWebviewViewProvider(
         CalcpadVueUIProvider.viewType,
         vueUiProvider
@@ -2710,23 +2689,20 @@ export async function activate(context: vscode.ExtensionContext) {
     // Process document on save
     const onDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument(document => {
         processDocument(document).catch(e => outputChannel.appendLine('[processDocument] Error: ' + e, 'warning'));
-        vueUiProvider?.refreshFileInfo();
+        vueUiProvider?.refreshDocumentMetadata();
     });
-
-    const onDidChangeVisibleTextEditors = vscode.window.onDidChangeVisibleTextEditors(editors => refreshFileInfoDecorations(editors));
 
     // Lint on document change (with debouncing)
     let lintTimeout: NodeJS.Timeout | unknown = undefined;
     const onDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument(event => {
         if (event.document.languageId === 'calcpad' || event.document.languageId === 'plaintext') {
-            refreshFileInfoDecorations(vscode.window.visibleTextEditors.filter(e => e.document === event.document));
             if (lintTimeout) {
                 clearTimeout(lintTimeout as NodeJS.Timeout);
             }
             lintTimeout = setTimeout(() => {
                 invalidateUiControls(event.document);
                 processDocument(event.document).catch(e => outputChannel.appendLine('[processDocument] Error: ' + e, 'warning'));
-                vueUiProvider?.refreshFileInfo();
+                vueUiProvider?.refreshDocumentMetadata();
             }, 500);
             // Only schedule preview update when auto-run is on. Otherwise the
             // preview updates only when the panel is (re)opened or the user
@@ -2743,7 +2719,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Also where a compiled worksheet coming to the front reaches the Info tab.
     const onTabsChanged = () => {
         syncInputMode();
-        vueUiProvider?.refreshFileInfo();
+        vueUiProvider?.refreshDocumentMetadata();
     };
     const onDidChangeTabs = vscode.window.tabGroups.onDidChangeTabs(onTabsChanged);
     const onDidChangeTabGroups = vscode.window.tabGroups.onDidChangeTabGroups(onTabsChanged);
@@ -2751,7 +2727,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Update preview and variables when active editor changes
     const onDidChangeActiveTextEditor = vscode.window.onDidChangeActiveTextEditor(async editor => {
         updateMetadataContext(editor);
-        vueUiProvider?.refreshFileInfo();
+        vueUiProvider?.refreshDocumentMetadata();
         // A text editor taking over is what ends a compiled worksheet's claim on the
         // export commands; a webview taking focus is not, which is the point of both
         // this and previewSourceEditor.
@@ -2861,8 +2837,6 @@ export async function activate(context: vscode.ExtensionContext) {
             onDidCloseTextDocument,
             onWillSaveTextDocument,
             onDidSaveTextDocument,
-            onDidChangeVisibleTextEditors,
-            fileInfoDecoration!,
             onDidChangeActiveTextEditor,
             onDidChangeTabs,
             onDidChangeTabGroups,
