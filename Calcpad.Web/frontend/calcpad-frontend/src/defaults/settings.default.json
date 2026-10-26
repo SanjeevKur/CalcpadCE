@@ -55,6 +55,7 @@
         "writeMode": "reportOnly",
         "dotnetPath": "dotnet",
         "editorFontFamily": "JuliaMono",
+        "completionDelayMs": 500,
         "userName": "",
         "pdfSettings": {
             "format": "Letter",

@@ -7,7 +7,7 @@ import { discardMetadataDraft } from 'calcpad-frontend/vue/metadata-drafts';
 import { MessageBridge } from './services/message-bridge';
 import type { TauriServerManager } from './services/server-manager';
 import { WorkspaceStateStore, isResultMode, type ResultMode, type WorkspaceLayout } from './services/workspace-state';
-import { buildApiSettings } from 'calcpad-frontend/types/settings';
+import { buildApiSettings, DEFAULT_COMPLETION_DELAY_MS } from 'calcpad-frontend/types/settings';
 import { ConnectionMonitor, setLogLevel, coerceLogLevel, stripCpdSnippetWrapper } from 'calcpad-frontend';
 import {
     findMetadataCommentBlock,
@@ -214,8 +214,6 @@ async function resolveConfigInvalid(manager: TauriServerManager, details: string
 
 async function bootstrap(): Promise<void> {
     let serverUrl: string;
-    // Secondary windows (File > New Window) share this process, the sidecar and the
-    // stores, so the main window owns everything there can only be one of.
     let isPrimaryWindow = true;
     let windowLabel = 'main';
     const appVersion = import.meta.env.VITE_APP_VERSION;
@@ -231,7 +229,14 @@ async function bootstrap(): Promise<void> {
 
     if (isTauri) {
         windowLabel = (await import('@tauri-apps/api/window')).getCurrentWindow().label;
-        isPrimaryWindow = windowLabel === 'main';
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { listen } = await import('@tauri-apps/api/event');
+        const updatePrimaryWindow = (label: string) => {
+            isPrimaryWindow = windowLabel === label;
+            serverManager?.setAutoRestartEnabled(isPrimaryWindow);
+        };
+        await listen<string>('primary-window-changed', event => updatePrimaryWindow(event.payload));
+        updatePrimaryWindow(await invoke<string>('primary_window'));
         // Tauri desktop: the Rust layer owns the Calcpad.Server sidecar
         // (spawn, kill on exit, port discovery). This manager just tracks
         // its URL and surfaces crashes to the Output panel.
@@ -246,11 +251,13 @@ async function bootstrap(): Promise<void> {
         };
 
         // The server is shared, so one dialog is enough; the manager already logged the reason.
-        if (isPrimaryWindow) {
-            serverManager.onStartupBlocked = (details: string) => { void showServerBlockedDialog(details); };
-            const manager = serverManager;
-            serverManager.onConfigInvalid = (details: string) => { void resolveConfigInvalid(manager, details); };
-        }
+        serverManager.onStartupBlocked = (details: string) => {
+            if (isPrimaryWindow) void showServerBlockedDialog(details);
+        };
+        const manager = serverManager;
+        serverManager.onConfigInvalid = (details: string) => {
+            if (isPrimaryWindow) void resolveConfigInvalid(manager, details);
+        };
 
         try {
             await serverManager.start();
@@ -320,6 +327,7 @@ async function bootstrap(): Promise<void> {
     const initialWordWrap: 'on' | 'off' =
         localStorage.getItem(WORD_WRAP_KEY) === 'off' ? 'off' : 'on';
     const initialEditorFontFamily = (activeBridge as unknown as EditorBridge).getExtraSetting('editorFontFamily') ?? 'JuliaMono';
+    let completionDelayMs = Number(activeBridge.getExtraSetting('completionDelayMs') ?? DEFAULT_COMPLETION_DELAY_MS);
 
     // ---- Editor groups ----
     // The desktop supports a single top/bottom split into two editor groups.
@@ -358,6 +366,14 @@ async function bootstrap(): Promise<void> {
         const resolved = resolveEditorFontFamily(family);
         for (const g of groups.values()) g.editor.updateOptions({ fontFamily: resolved });
         remeasureEditorFontsWhenReady(family);
+    });
+
+    window.addEventListener('message', (event) => {
+        const msg = (event as MessageEvent).data;
+        if (msg?.type !== 'completionDelayMsChanged' && msg?.type !== 'settingsResponse') return;
+        if (event.source !== null) return;
+        completionDelayMs = msg.completionDelayMs;
+        for (const g of groups.values()) g.editor.updateOptions({ quickSuggestionsDelay: completionDelayMs });
     });
 
     // ---- Group-scoped refresh helpers ----
@@ -857,12 +873,9 @@ async function bootstrap(): Promise<void> {
 
     function refreshWindowTitle(): void {
         const active = activeGroup?.tabs.activeTab;
-        // Extra windows are numbered from their `main-N` label so they can be told apart in
-        // the taskbar; the main window, and the single-window case, stay unmarked.
-        const suffix = isPrimaryWindow ? '' : ` (${windowLabel.slice('main-'.length)})`;
         const title = active?.title
-            ? `${active.title} – CalcpadCE ${appVersion}${suffix}`
-            : `CalcpadCE ${appVersion}${suffix}`;
+            ? `${active.title} – CalcpadCE ${appVersion}`
+            : `CalcpadCE ${appVersion}`;
         document.title = title;
         setNativeTitle?.(title);
     }
@@ -1064,7 +1077,7 @@ async function bootstrap(): Promise<void> {
         await nextTick();
         const container = appInstance.getEditorContainer(id) as HTMLElement | null;
         if (!container) throw new Error(`Editor container for group ${id} not found`);
-        const group = new EditorGroup(id, container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily });
+        const group = new EditorGroup(id, container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily, completionDelayMs });
         groups.set(id, group);
         wireGroupCommon(group);
         for (const hook of groupWireHooks) hook(group);
@@ -1077,7 +1090,7 @@ async function bootstrap(): Promise<void> {
     // ---- Seed the primary group (g0 already rendered by App.vue) ----
     const g0Container = appInstance.getEditorContainer('g0') as HTMLElement | null;
     if (!g0Container) throw new Error('Primary editor container not found');
-    const primaryGroup = new EditorGroup('g0', g0Container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily });
+    const primaryGroup = new EditorGroup('g0', g0Container, { wordWrap: initialWordWrap, fontFamily: initialEditorFontFamily, completionDelayMs });
     groups.set('g0', primaryGroup);
     setActiveGroup(primaryGroup);
     wireGroupCommon(primaryGroup);
@@ -1686,9 +1699,9 @@ async function bootstrap(): Promise<void> {
     // nothing else would put the first render on screen.
     if (appInstance.isPreviewVisible()) setTimeout(refreshAllPreviews, 50);
     // Wired after the restore so it doesn't write the same values straight back.
-    if (isPrimaryWindow) {
-        appInstance.onLayoutChanged = (layout: WorkspaceLayout) => { workspace.update({ layout }); };
-    }
+    appInstance.onLayoutChanged = (layout: WorkspaceLayout) => {
+        if (isPrimaryWindow) workspace.update({ layout });
+    };
 
     // The restores above predate onResultModeChanged, and the sidebar has only just
     // mounted, so seed it with the mode and pane state the session came up in.
@@ -2079,7 +2092,7 @@ async function bootstrap(): Promise<void> {
          */
         async function restoreSession(): Promise<void> {
             // A new window comes up empty, and never overwrites the main window's session.
-            if (!isPrimaryWindow) return;
+            if (windowLabel !== 'main') return;
             for (const path of workspace.get().openFiles) {
                 // Files deleted or moved since last launch drop out of the session silently.
                 try {
@@ -2105,7 +2118,7 @@ async function bootstrap(): Promise<void> {
         // synchronous dispatch inside handleOpenFileByPath actually lands.
         // Only the main window drains them; a second window opened later would otherwise
         // steal files the launch handed to the first.
-        if (isTauri && isPrimaryWindow) {
+        if (isTauri && windowLabel === 'main') {
             try {
                 const pending = await tauriInvoke<string[]>('take_pending_launch_files');
                 for (const path of pending) await loadFile(path);
@@ -2280,9 +2293,9 @@ async function bootstrap(): Promise<void> {
             // Registered here rather than beside captureSession so it starts only once
             // restoreSession() has finished laying the session back out, and stops again
             // once the exit path has taken its snapshot.
-            if (isPrimaryWindow) {
-                group.tabs.onTabsChanged(() => { if (!isExiting) captureSession(); });
-            }
+            group.tabs.onTabsChanged(() => {
+                if (isPrimaryWindow && !isExiting) captureSession();
+            });
 
             // Drag-drop file open — each dropped file opens/focuses a tab in
             // this group.
@@ -2853,9 +2866,6 @@ async function bootstrap(): Promise<void> {
         let isExiting = false;
         let allowWindowClose = false;
 
-        // Only a wedged webview should ever reach this cap.
-        const CLOSE_WAIT_CAP_MS = 120_000;
-
         /** Save prompts for everything unsaved in this window. False if the user cancelled. */
         async function confirmWindowClose(): Promise<boolean> {
             if (!await confirmLeaveUiDoc()) return false;
@@ -2874,44 +2884,7 @@ async function bootstrap(): Promise<void> {
             return true;
         }
 
-        async function ackWindowClose(ok: boolean): Promise<void> {
-            try {
-                const { emitTo } = await import('@tauri-apps/api/event');
-                await emitTo('main', 'calcpad-close-window-ack', {
-                    label: getCurrentWindow().label,
-                    ok,
-                });
-            } catch {
-                /* the main window is on its way out regardless */
-            }
-        }
-
-        /**
-         * The main window closing takes the others with it, so each is asked to run its own
-         * save prompts and then close itself. Waiting for them to disappear rather than for
-         * a deadline means a window still prompting is never torn down under the user.
-         */
-        async function closeSecondaryWindows(): Promise<boolean> {
-            const labels = (await tauriInvoke<string[]>('window_labels')).filter(l => l !== 'main');
-            if (labels.length === 0) return true;
-
-            let cancelled = false;
-            const unlisten = await listenHere<{ ok: boolean }>('calcpad-close-window-ack', (evt) => {
-                if (!evt.payload.ok) cancelled = true;
-            });
-            const { emitTo } = await import('@tauri-apps/api/event');
-            for (const label of labels) await emitTo(label, 'calcpad-close-window');
-
-            const deadline = Date.now() + CLOSE_WAIT_CAP_MS;
-            while (!cancelled && await windowCount() > 1 && Date.now() < deadline) {
-                await new Promise(resolve => setTimeout(resolve, 200));
-            }
-            unlisten();
-            return !cancelled && await windowCount() === 1;
-        }
-
-        /** The sidecar, the stores and the process belong to the window that goes last. */
-        async function shutdownProcess(): Promise<void> {
+        async function closeWindow(): Promise<void> {
             connectionMonitor.stop();
             // Rust owns sidecar shutdown (kill-on-exit hook). This dispose only
             // tears down TS event listeners.
@@ -2919,23 +2892,14 @@ async function bootstrap(): Promise<void> {
                 try { await serverManager.dispose(); }
                 catch (e) { appInstance.appendOutput('debug', `serverManager.dispose() rejected: ${e}`); }
             }
-            try { await workspace.flush(); }
+            try { if (isPrimaryWindow) await workspace.flush(); }
             catch (e) { appInstance.appendOutput('debug', `workspace.flush() rejected: ${e}`); }
-            appInstance.appendOutput('debug', 'Exit path: closing the final window');
+            appInstance.appendOutput('debug', 'Closing window');
             allowWindowClose = true;
             await getCurrentWindow().close();
         }
 
-        async function windowCount(): Promise<number> {
-            try { return (await tauriInvoke<string[]>('window_labels')).length; }
-            catch { return 1; }
-        }
-
-        /**
-         * Close this window. A secondary window with others still open closes alone;
-         * the main window, and the last window standing, tear the process down.
-         */
-        async function tryExit(fromMainClose = false): Promise<void> {
+        async function tryExit(): Promise<void> {
             if (isExiting) return;        // re-entry guard (multiple X clicks)
             isExiting = true;
 
@@ -2946,31 +2910,16 @@ async function bootstrap(): Promise<void> {
             try {
                 if (!await confirmWindowClose()) {
                     isExiting = false;
-                    if (fromMainClose) await ackWindowClose(false);
-                    return;
-                }
-                if (isPrimaryWindow && !await closeSecondaryWindows()) {
-                    isExiting = false;
                     return;
                 }
             } catch (e) {
                 appInstance.appendOutput('debug', `Close prompts failed, closing anyway: ${e}`);
             }
 
-            if (!isPrimaryWindow && await windowCount() > 1) {
-                await getCurrentWindow().destroy();
-                return;
-            }
-            await shutdownProcess();
+            await closeWindow();
         }
 
         quitApplication = tryExit;
-
-        // The main window is closing and takes us with it — same path as our own X,
-        // which reports back if the user cancels.
-        if (!isPrimaryWindow) {
-            await listenHere('calcpad-close-window', () => { void tryExit(true); });
-        }
 
         // Intercept the window close button so unsaved tabs get their save prompt
         // before Tauri tears down the webview.

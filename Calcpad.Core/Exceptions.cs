@@ -280,6 +280,18 @@ namespace Calcpad.Core
         internal static MathParserException MissingMapItem(string s) =>
             new(string.Format(Messages.Missing_0_in_surface_map_command, s));
 
+        internal static MathParserException MissingMapDelimiter(char delimiter, string script) =>
+            new(string.Format(Messages.Missing_delimiter_0_in_surface_map_command_1, delimiter, script));
+
+        internal static MathParserException MissingPlotDelimiter(char delimiter, string script) =>
+            new(string.Format(Messages.Missing_delimiter_0_in_plot_command, delimiter, script));
+
+        internal static MathParserException MissingPlotItem(string item, string script) =>
+            new(string.Format(Messages.Missing_0_in_plot_command_1, item, script));
+
+        internal static MathParserException MultiplePlotDelimiters(string script) =>
+            new(string.Format(Messages.More_than_one_delimiter_in_plot_command, script));
+
         internal static MathParserException PlotLimitsIdentical() =>
             new(Messages.The_limits_of_plot_area_are_identical);
 
