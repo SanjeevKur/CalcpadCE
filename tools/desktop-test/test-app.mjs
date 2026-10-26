@@ -82,12 +82,18 @@ export class TestApp {
         if (code !== 0) throw new Error(`Repeat launch exited with ${code}`);
     }
 
-    async evaluate(page, expression) {
+    async evaluate(page, expression, timeoutMs = 10000) {
         const socket = new WebSocket(page.webSocketDebuggerUrl);
-        await once(socket, 'open');
         try {
             return await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('Evaluation timed out')), 10000);
+                const timeout = setTimeout(() => reject(new Error('Evaluation timed out')), timeoutMs);
+                socket.onerror = () => {
+                    clearTimeout(timeout);
+                    reject(new Error('Debugger connection failed'));
+                };
+                socket.onopen = () => socket.send(JSON.stringify({id: 1, method: 'Runtime.evaluate', params: {
+                    expression, awaitPromise: true, returnByValue: true,
+                }}));
                 socket.onmessage = event => {
                     const result = JSON.parse(event.data);
                     if (result.id !== 1) return;
@@ -96,9 +102,6 @@ export class TestApp {
                         reject(new Error(JSON.stringify(result.error ?? result.result.exceptionDetails)));
                     } else resolve(result.result.result.value);
                 };
-                socket.send(JSON.stringify({id: 1, method: 'Runtime.evaluate', params: {
-                    expression, awaitPromise: true, returnByValue: true,
-                }}));
             });
         } finally { socket.close(); }
     }
@@ -107,9 +110,11 @@ export class TestApp {
         const pages = (await (await fetch(`${this.endpoint}/json`)).json()).filter(page => page.type === 'page');
         const result = new Map();
         for (const page of pages) {
+            // A page that is still loading or closing may never answer; treat it as not ready.
             const state = await this.evaluate(page,
-                `({label: window.__TAURI_INTERNALS__?.metadata.currentWindow.label, ready: !!window.calcpadTabs})`);
-            if (state.ready) result.set(state.label, page);
+                `({label: window.__TAURI_INTERNALS__?.metadata.currentWindow.label, ready: !!window.calcpadTabs})`, 3000)
+                .catch(() => null);
+            if (state?.ready) result.set(state.label, page);
         }
         return result;
     }
