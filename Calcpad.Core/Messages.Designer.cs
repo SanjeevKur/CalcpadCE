@@ -529,6 +529,33 @@ namespace Calcpad.Core {
         }
 
         // / <summary>
+        // /   Looks up a localized string similar to Complex numbers are not supported outside of complex mode..
+        // / </summary>
+        public static string Complex_numbers_are_not_supported_outside_of_complex_mode {
+            get {
+                return ResourceManager.GetString("Complex_numbers_are_not_supported_outside_of_complex_mode", resourceCulture);
+            }
+        }
+
+        // / <summary>
+        // /   Looks up a localized string similar to Function &quot;{0}&quot; with complex values is not supported outside of complex mode..
+        // / </summary>
+        public static string Function_0_with_complex_values_is_not_supported_outside_of_complex_mode {
+            get {
+                return ResourceManager.GetString("Function_0_with_complex_values_is_not_supported_outside_of_complex_mode", resourceCulture);
+            }
+        }
+
+        // / <summary>
+        // /   Looks up a localized string similar to Complex variable &quot;{0}&quot; is not supported outside of complex mode..
+        // / </summary>
+        public static string Complex_variable_0_is_not_supported_outside_of_complex_mode {
+            get {
+                return ResourceManager.GetString("Complex_variable_0_is_not_supported_outside_of_complex_mode", resourceCulture);
+            }
+        }
+
+        // / <summary>
         // /   Looks up a localized string similar to Function {0} is not defined in complex mode..
         // / </summary>
         public static string Function_0_is_not_defined_in_complex_mode {
@@ -1033,7 +1060,7 @@ namespace Calcpad.Core {
         }
 
         // / <summary>
-        // /   Looks up a localized string similar to &lt;span class = &quot;err&quot;&gt;Missing {0} in plot command &quot;{1}&quot;.&lt;/span&gt;..
+        // /   Looks up a localized string similar to Missing {0} in plot command &quot;{1}&quot;..
         // / </summary>
         public static string Missing_0_in_plot_command_1 {
             get {
@@ -1051,7 +1078,7 @@ namespace Calcpad.Core {
         }
 
         // / <summary>
-        // /   Looks up a localized string similar to &lt;span class = &quot;err&quot;&gt;Missing delimiter &quot;{0}&quot; in plot command &quot;{1}&quot;.&lt;/span&gt;.
+        // /   Looks up a localized string similar to Missing delimiter &quot;{0}&quot; in plot command &quot;{1}&quot;..
         // / </summary>
         public static string Missing_delimiter_0_in_plot_command {
             get {
@@ -1069,7 +1096,7 @@ namespace Calcpad.Core {
         }
 
         // / <summary>
-        // /   Looks up a localized string similar to &lt;span class = &quot;err&quot;&gt;Missing delimiter &quot;{0}&quot; in surface map command &quot;{1}&quot;.&lt;/span&gt;.
+        // /   Looks up a localized string similar to Missing delimiter &quot;{0}&quot; in surface map command &quot;{1}&quot;..
         // / </summary>
         public static string Missing_delimiter_0_in_surface_map_command_1 {
             get {
@@ -1186,7 +1213,7 @@ namespace Calcpad.Core {
         }
 
         // / <summary>
-        // /   Looks up a localized string similar to &lt;span class = &quot;err&quot;&gt;More than one delimiter &quot;|&quot; in plot command {0}.&lt;/span&gt;.
+        // /   Looks up a localized string similar to More than one delimiter &quot;|&quot; in plot command {0}..
         // / </summary>
         public static string More_than_one_delimiter_in_plot_command {
             get {

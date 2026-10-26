@@ -2,6 +2,8 @@ import defaultSettingsJson from '../defaults/settings.default.json' with { type:
 import { specForKey, validateCatalogValue } from './catalog';
 import type { MetadataSettingKey, SettingOption } from './catalog';
 
+export const DEFAULT_COMPLETION_DELAY_MS = defaultSettingsJson.extras.completionDelayMs;
+
 export interface CalcpadSettings {
     math: {
         decimals: number;

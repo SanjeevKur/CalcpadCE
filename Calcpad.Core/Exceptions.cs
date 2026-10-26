@@ -280,6 +280,18 @@ namespace Calcpad.Core
         internal static MathParserException MissingMapItem(string s) =>
             new(string.Format(Messages.Missing_0_in_surface_map_command, s));
 
+        internal static MathParserException MissingMapDelimiter(char delimiter, string script) =>
+            new(string.Format(Messages.Missing_delimiter_0_in_surface_map_command_1, delimiter, script));
+
+        internal static MathParserException MissingPlotDelimiter(char delimiter, string script) =>
+            new(string.Format(Messages.Missing_delimiter_0_in_plot_command, delimiter, script));
+
+        internal static MathParserException MissingPlotItem(string item, string script) =>
+            new(string.Format(Messages.Missing_0_in_plot_command_1, item, script));
+
+        internal static MathParserException MultiplePlotDelimiters(string script) =>
+            new(string.Format(Messages.More_than_one_delimiter_in_plot_command, script));
+
         internal static MathParserException PlotLimitsIdentical() =>
             new(Messages.The_limits_of_plot_area_are_identical);
 
@@ -339,6 +351,15 @@ namespace Calcpad.Core
 
         internal static MathParserException CrossProductVectorDimensions() =>
             new(Messages.Cross_product_is_definedonly_for_vectors_with_2_and_3_elements);
+
+        internal static MathParserException ComplexNumberInRealMode() =>
+            new ComplexInRealModeException(Messages.Complex_numbers_are_not_supported_outside_of_complex_mode);
+
+        internal static MathParserException ComplexVariableInRealMode(string name) =>
+            new ComplexInRealModeException(string.Format(Messages.Complex_variable_0_is_not_supported_outside_of_complex_mode, name));
+
+        internal static MathParserException ComplexFunctionInRealMode(string name) =>
+            new ComplexInRealModeException(string.Format(Messages.Function_0_with_complex_values_is_not_supported_outside_of_complex_mode, name));
 
         internal static MathParserException FunctionOnlyRealMode(string name) =>
             new(string.Format(Messages.Function_0_is_not_defined_in_complex_mode, name));

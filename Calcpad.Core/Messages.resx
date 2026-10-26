@@ -383,16 +383,16 @@
         <value>Duplicate macro name: "{0}".</value>
     </data>
   <data name="Missing_delimiter_0_in_plot_command" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Missing delimiter "{0}" in plot command "{1}".&lt;/span&gt;</value>
+        <value>Missing delimiter "{0}" in plot command "{1}".</value>
     </data>
   <data name="Missing_0_in_plot_command_1" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Missing {0} in plot command "{1}".&lt;/span&gt;.</value>
+        <value>Missing {0} in plot command "{1}".</value>
     </data>
   <data name="More_than_one_delimiter_in_plot_command" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;More than one delimiter "|" in plot command {0}.&lt;/span&gt;</value>
+        <value>More than one delimiter "|" in plot command {0}.</value>
     </data>
   <data name="Missing_delimiter_0_in_surface_map_command_1" xml:space="preserve">
-        <value>&lt;span class = "err"&gt;Missing delimiter "{0}" in surface map command "{1}".&lt;/span&gt;</value>
+        <value>Missing delimiter "{0}" in surface map command "{1}".</value>
     </data>
   <data name="Function_redefined" xml:space="preserve">
         <value> Warning! Function redefined.</value>
@@ -444,6 +444,15 @@
   </data>
   <data name="Cross_product_is_definedonly_for_vectors_with_2_and_3_elements" xml:space="preserve">
     <value>Cross product is defined only for vectors with 2 and 3 elements.</value>
+  </data>
+  <data name="Complex_numbers_are_not_supported_outside_of_complex_mode" xml:space="preserve">
+    <value>Complex numbers are not supported outside of complex mode.</value>
+  </data>
+  <data name="Function_0_with_complex_values_is_not_supported_outside_of_complex_mode" xml:space="preserve">
+    <value>Function "{0}" with complex values is not supported outside of complex mode.</value>
+  </data>
+  <data name="Complex_variable_0_is_not_supported_outside_of_complex_mode" xml:space="preserve">
+    <value>Complex variable "{0}" is not supported outside of complex mode.</value>
   </data>
   <data name="Function_0_is_not_defined_in_complex_mode" xml:space="preserve">
     <value>Function {0} is not defined in complex mode.</value>

@@ -6,4 +6,6 @@ namespace Calcpad.Core
     {
         internal MathParserException(string message) : base(message) { }
     }
+
+    internal sealed class ComplexInRealModeException(string message) : MathParserException(message);
 }

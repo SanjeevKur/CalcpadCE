@@ -191,6 +191,12 @@ namespace Calcpad.Core
                     BindingFlags.Static | BindingFlags.NonPublic
                 );
 
+            private static readonly MethodInfo GetVariableValueMethod =
+                typeof(Evaluator).GetMethod(
+                    nameof(Evaluator.GetVariableValue),
+                    BindingFlags.Instance | BindingFlags.NonPublic
+                );
+
             private static readonly MethodInfo LuDecompositionMethod =
                 typeof(MatrixCalculator).GetMethod(
                     nameof(MatrixCalculator.LUDecomposition),

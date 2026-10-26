@@ -8,7 +8,7 @@ import { buildSourceDefinitionResolver } from '../../text/source-definitions';
 import { findUiDirectiveBlock, serializeUiDirective } from '../../text/ui-directive';
 import type { UiDirectiveData } from '../../text/ui-directive';
 import type { ExportVariant } from '../../types/api';
-import { getDefaultSettings, buildApiSettings, coerceWriteMode, coerceLogLevel, writesAllowed } from '../../types/settings';
+import { getDefaultSettings, buildApiSettings, coerceWriteMode, coerceLogLevel, writesAllowed, DEFAULT_COMPLETION_DELAY_MS } from '../../types/settings';
 import { setLogLevel } from '../log-level';
 import type { CalcpadSettings, WriteMode } from '../../types/settings';
 import { resolveStoredPdfSettings, resolveEffectivePdfSettings } from '../../types/pdf-settings';
@@ -453,6 +453,10 @@ export abstract class BaseMessageBridge {
                 this.setExtraSetting('editorFontFamily', message.family ?? '');
                 this.postToVue({ type: 'editorFontFamilyChanged', family: message.family ?? '' });
                 break;
+            case 'updateCompletionDelayMs':
+                this.setExtraSetting('completionDelayMs', String(message.completionDelayMs));
+                this.postToVue({ type: 'completionDelayMsChanged', completionDelayMs: message.completionDelayMs });
+                break;
             // Only the calcpad-web/desktop host has a collapsible sidebar, and it is
             // what listens for this event.
             case 'hideSidebar':
@@ -595,6 +599,7 @@ export abstract class BaseMessageBridge {
             maxPreviewConsoleMessages: Number(this.getExtraSetting('maxPreviewConsoleMessages'))
                 || DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT,
             editorFontFamily: this.getExtraSetting('editorFontFamily') ?? 'JuliaMono',
+            completionDelayMs: Number(this.getExtraSetting('completionDelayMs') ?? DEFAULT_COMPLETION_DELAY_MS),
             userName: this.getExtraSetting('userName') ?? '',
             showFileInfoLine: this.getExtraSetting('showFileInfoLine') === 'true',
             writeMode: this.writeMode(),

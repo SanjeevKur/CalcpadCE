@@ -371,6 +371,22 @@
             </label>
           </div>
 
+          <div v-if="versionConfig.isWebOrDesktop" v-show="rowVisible('editor', 'completionDelayMs')" class="setting-group">
+            <label for="completionDelayMs">
+              <CalcpadSearchHighlight text="Completion Delay (ms):" :query="query" />
+              <span class="setting-info" title="How long to wait before showing code suggestions while typing. Zero shows them immediately.">ⓘ</span>
+            </label>
+            <input
+              id="completionDelayMs"
+              v-model.number="completionDelayMs"
+              type="number"
+              min="0"
+              step="1"
+              required
+              @change="updateCompletionDelayMs"
+            />
+          </div>
+
           <div v-if="versionConfig.isDesktop" v-show="rowVisible('editor', 'fontFamily')" class="setting-group">
             <label for="editorFontFamily">
               <CalcpadSearchHighlight text="Font Family:" :query="query" />
@@ -671,7 +687,7 @@ import CollapseAllButton from './CollapseAllButton.vue'
 import type { WritableComputedRef } from 'vue'
 import type { PdfSettings, Settings, ThemeInfo, VersionConfig } from '../types'
 import { DEFAULT_PDF_SETTINGS, DEFAULT_VERSION_CONFIG } from '../types'
-import { getDefaultSettings, METADATA_SETTINGS_KEYS, validateSettingValue, SETTINGS_PATH, LOG_LEVEL_OPTIONS } from '../../types/settings'
+import { getDefaultSettings, METADATA_SETTINGS_KEYS, validateSettingValue, SETTINGS_PATH, LOG_LEVEL_OPTIONS, DEFAULT_COMPLETION_DELAY_MS } from '../../types/settings'
 import { PDF_SETTING_KEYS, validatePdfValue } from '../../types/pdf-settings'
 import { specForKey } from '../../types/catalog'
 import {
@@ -703,6 +719,7 @@ interface Props {
   initialActiveConfig?: string
   initialAvailableConfigs?: string[]
   initialEditorFontFamily?: string
+  initialCompletionDelayMs?: number
   initialAvailableFonts?: string[]
   initialUserName?: string
   /** A setting to bring into view and focus, by its section and input id. */
@@ -733,6 +750,7 @@ const props = withDefaults(defineProps<Props>(), {
   initialActiveConfig: 'default',
   initialAvailableConfigs: () => ['default'],
   initialEditorFontFamily: 'JuliaMono',
+  initialCompletionDelayMs: DEFAULT_COMPLETION_DELAY_MS,
   initialAvailableFonts: () => [],
   initialUserName: '',
   focusRequest: null,
@@ -766,6 +784,7 @@ const emit = defineEmits<{
   openFontsFolder: []
   refreshFonts: []
   updateEditorFontFamily: [family: string]
+  updateCompletionDelayMs: [delayMs: number]
   updateUserName: [value: string]
   focusHandled: []
   updatePdfSettings: [settings: PdfSettings]
@@ -852,6 +871,7 @@ const maxPreviewConsoleMessages = ref(props.initialMaxPreviewConsoleMessages)
 const activeConfig = ref(props.initialActiveConfig)
 const availableConfigs = ref<string[]>(props.initialAvailableConfigs)
 const editorFontFamily = ref(props.initialEditorFontFamily)
+const completionDelayMs = ref(props.initialCompletionDelayMs)
 const availableFonts = ref<string[]>(props.initialAvailableFonts)
 const userName = ref(props.initialUserName)
 const newConfigName = ref('')
@@ -935,6 +955,7 @@ const SECTION_META: Record<string, { title: string; rows: Record<string, string>
       autoInputMode: 'auto input mode ui form first open',
       previewUiOverrides: 'apply ui values preview entered overrides debug troubleshoot',
       fontFamily: 'editor font family juliamono system',
+      completionDelayMs: 'completion delay autocomplete code suggestions milliseconds ms',
       fontsFolder: 'open fonts folder custom',
       previewTheme: 'preview theme system light dark',
       darkBackground: 'dark mode background color',
@@ -1165,6 +1186,11 @@ const updateEditorFontFamily = () => {
   emit('updateEditorFontFamily', editorFontFamily.value)
 }
 
+const updateCompletionDelayMs = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  if (input.reportValidity()) emit('updateCompletionDelayMs', input.valueAsNumber)
+}
+
 const updateUserName = () => {
   userName.value = userName.value.trim()
   emit('updateUserName', userName.value)
@@ -1311,6 +1337,13 @@ watch(
   () => props.initialEditorFontFamily,
   (newValue) => {
     editorFontFamily.value = newValue
+  }
+)
+
+watch(
+  () => props.initialCompletionDelayMs,
+  (delayMs) => {
+    completionDelayMs.value = delayMs
   }
 )
 

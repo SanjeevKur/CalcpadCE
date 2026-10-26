@@ -154,6 +154,12 @@ namespace Calcpad.Core
                 _solver.IsComplex = isComplex;
                 _vectorCalc.SetCalculator(_calc);
                 _matrixCalc.SetCalculator(_calc);
+                if (isComplex)
+                    AddComplexVariables();
+                else
+                    RemoveComplexVariables();
+
+                ClearCache();
             }
         }
 
@@ -469,13 +475,43 @@ namespace Calcpad.Core
             _variables.Add("e", new Variable(new RealValue(Math.E)));
             _variables.Add("pi", new Variable(pi));
             _variables.Add("π", new Variable(pi) { IsReadOnly = true });
-            ;
             if (_settings.IsComplex)
+                AddComplexVariables();
+        }
+
+        private static readonly string[] ComplexVariableNames = ["i", "ei", "πi"];
+        private Variable[] _complexVariables;
+
+        private static Variable[] CreateComplexVariables() =>
+        [
+            new(Core.Complex.ImaginaryOne),
+            new(Math.E * Core.Complex.ImaginaryOne),
+            new(Math.PI * Core.Complex.ImaginaryOne)
+        ];
+
+        private void AddComplexVariables()
+        {
+            _complexVariables = CreateComplexVariables();
+            for (int k = 0; k < ComplexVariableNames.Length; ++k)
+                _variables.TryAdd(ComplexVariableNames[k], _complexVariables[k]);
+        }
+
+        private void RemoveComplexVariables()
+        {
+            if (_complexVariables is null)
+                return;
+
+            // Keep constants the user reassigned
+            var defaults = CreateComplexVariables();
+            for (int k = 0; k < ComplexVariableNames.Length; ++k)
             {
-                _variables.Add("i", new Variable(Core.Complex.ImaginaryOne));
-                _variables.Add("ei", new Variable(Math.E * Core.Complex.ImaginaryOne));
-                _variables.Add("πi", new Variable(Math.PI * Core.Complex.ImaginaryOne));
+                var name = ComplexVariableNames[k];
+                if (_variables.TryGetValue(name, out var v) &&
+                    ReferenceEquals(v, _complexVariables[k]) &&
+                    v.Value.Equals(defaults[k].Value))
+                    _variables.Remove(name);
             }
+            _complexVariables = null;
         }
 
         public void Parse(ReadOnlySpan<char> expression, bool allowAssignment = true)
@@ -619,6 +655,14 @@ namespace Calcpad.Core
                 throw Exceptions.ResultNotReal(Core.Complex.Format(value.Complex, _settings.Decimals, Phasor, OutputWriter.OutputFormat.Text));
         }
 
+        private IScalarValue CheckConstant(IScalarValue value)
+        {
+            if (value is ComplexValue c && !c.IsReal && !_settings.IsComplex)
+                throw Exceptions.ComplexNumberInRealMode();
+
+            return value;
+        }
+
         private void AddFunction(Queue<Token> input)
         {
             var t = input.Dequeue();
@@ -717,6 +761,7 @@ namespace Calcpad.Core
                         if (index >= 0)
                             cf.Clear();
 
+                        cf.Name = name;
                         _functionDefinitionIndex = _functions.Add(name, cf);
                         return;
                     }
