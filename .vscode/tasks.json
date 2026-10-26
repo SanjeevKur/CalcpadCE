@@ -3,19 +3,39 @@
     "tasks": [
         // ── Tests (Calcpad.Tests) ───────────────────────────────────────
         {
+            // Shared Debug build so parallel tasks don't race on obj/.
+            "label": "Build: .NET",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/Calcpad.Tests/Calcpad.Tests.csproj",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary;ForceNoAlign"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
             "label": "Tests: Run",
+            "dependsOn": "Build: .NET",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
             "type": "process",
             "command": "dotnet",
             "args": [
                 "test",
                 "${workspaceFolder}/Calcpad.Tests/Calcpad.Tests.csproj",
+                "--no-build",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary;ForceNoAlign"
             ],
-            "group": {
-                "kind": "test",
-                "isDefault": true
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
@@ -178,6 +198,23 @@
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
+            }
+        },
+        {
+            "label": "Frontend Lib: Build",
+            "type": "shell",
+            "command": "npm",
+            "args": ["run", "build"],
+            "options": {
+                "cwd": "${workspaceFolder}/Calcpad.Web/frontend/calcpad-frontend"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "base": "$tsc",
+                "fileLocation": ["relative", "${workspaceFolder}/Calcpad.Web/frontend/calcpad-frontend"]
             }
         },
         {
@@ -581,11 +618,12 @@
         // ── Checks ──────────────────────────────────────────────────────
         {
             "label": "Check: .NET Lint",
-            "type": "shell",
+            "type": "process",
             "group": "test",
+            "dependsOn": "Build: .NET",
             "options": { "cwd": "${workspaceFolder}" },
+            "command": "bash",
             "linux": {
-                "command": "bash",
                 "args": ["-c", "rc=0; for p in Calcpad.Core/Calcpad.Core.csproj Calcpad.Highlighter/Calcpad.Highlighter.csproj Calcpad.Web/backend/Calcpad.Server.csproj Calcpad.Tests/Calcpad.Tests.csproj; do for c in style analyzers; do dotnet format $c \"$p\" --verify-no-changes || rc=1; done; done; exit $rc"]
             },
             "windows": {
@@ -597,11 +635,12 @@
         },
         {
             "label": "Check: .NET Whitespace",
-            "type": "shell",
+            "type": "process",
             "group": "test",
+            "dependsOn": "Build: .NET",
             "options": { "cwd": "${workspaceFolder}" },
+            "command": "bash",
             "linux": {
-                "command": "bash",
                 "args": ["-c", "rc=0; for p in Calcpad.Core/Calcpad.Core.csproj Calcpad.Highlighter/Calcpad.Highlighter.csproj Calcpad.Web/backend/Calcpad.Server.csproj Calcpad.Tests/Calcpad.Tests.csproj; do dotnet format whitespace \"$p\" --verify-no-changes || rc=1; done; exit $rc"]
             },
             "windows": {
@@ -613,10 +652,11 @@
         },
         {
             "label": "Fix: .NET Format",
-            "type": "shell",
+            "type": "process",
+            "dependsOn": "Build: .NET",
             "options": { "cwd": "${workspaceFolder}" },
+            "command": "bash",
             "linux": {
-                "command": "bash",
                 "args": ["-c", "for p in Calcpad.Core/Calcpad.Core.csproj Calcpad.Highlighter/Calcpad.Highlighter.csproj Calcpad.Web/backend/Calcpad.Server.csproj Calcpad.Tests/Calcpad.Tests.csproj; do dotnet format \"$p\"; done"]
             },
             "windows": {
@@ -636,6 +676,7 @@
                 "${workspaceFolder}/Calcpad.Tests/Calcpad.Tests.csproj",
                 "--no-incremental",
                 "-warnaserror",
+                "--artifacts-path", "${workspaceFolder}/artifacts/warnings-check",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary;ForceNoAlign"
             ],
@@ -684,6 +725,7 @@
             "label": "Check: TypeScript (Extension)",
             "type": "shell",
             "group": "test",
+            "dependsOn": "Frontend Lib: Build",
             "options": { "cwd": "${workspaceFolder}/Calcpad.Web/frontend/vscode-calcpad" },
             "linux": {
                 "command": "bash",
@@ -749,6 +791,17 @@
                 "Check: TypeScript (Extension)",
                 "Check: Rust",
                 "Check: Rust Format"
+            ],
+            "dependsOrder": "parallel",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run All Verifications",
+            "dependsOn": [
+                "Tests: Run",
+                "Scripts: Compare Renderings (Write)",
+                "Check: All"
             ],
             "dependsOrder": "parallel",
             "group": "test",
