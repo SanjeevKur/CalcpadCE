@@ -83,6 +83,14 @@ export class TestApp {
     }
 
     async evaluate(page, expression, timeoutMs = 10000) {
+        const result = await this.cdp(page, 'Runtime.evaluate', {
+            expression, awaitPromise: true, returnByValue: true,
+        }, timeoutMs);
+        if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+        return result.result.value;
+    }
+
+    async cdp(page, method, params, timeoutMs = 10000) {
         const socket = new WebSocket(page.webSocketDebuggerUrl);
         try {
             return await new Promise((resolve, reject) => {
@@ -91,16 +99,13 @@ export class TestApp {
                     clearTimeout(timeout);
                     reject(new Error('Debugger connection failed'));
                 };
-                socket.onopen = () => socket.send(JSON.stringify({id: 1, method: 'Runtime.evaluate', params: {
-                    expression, awaitPromise: true, returnByValue: true,
-                }}));
+                socket.onopen = () => socket.send(JSON.stringify({id: 1, method, params}));
                 socket.onmessage = event => {
                     const result = JSON.parse(event.data);
                     if (result.id !== 1) return;
                     clearTimeout(timeout);
-                    if (result.error || result.result.exceptionDetails) {
-                        reject(new Error(JSON.stringify(result.error ?? result.result.exceptionDetails)));
-                    } else resolve(result.result.result.value);
+                    if (result.error) reject(new Error(JSON.stringify(result.error)));
+                    else resolve(result.result);
                 };
             });
         } finally { socket.close(); }
@@ -112,7 +117,8 @@ export class TestApp {
         for (const page of pages) {
             // A page that is still loading or closing may never answer; treat it as not ready.
             const state = await this.evaluate(page,
-                `({label: window.__TAURI_INTERNALS__?.metadata.currentWindow.label, ready: !!window.calcpadTabs})`, 3000)
+                `({label: window.__TAURI_INTERNALS__?.metadata.currentWindow.label,
+                    ready: !!window.calcpadTabs && !!document.querySelector('.tab-drop-marker')})`, 3000)
                 .catch(() => null);
             if (state?.ready) result.set(state.label, page);
         }

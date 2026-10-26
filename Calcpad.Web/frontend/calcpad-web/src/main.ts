@@ -54,6 +54,7 @@ import { registerFormatDocumentProvider } from './editor/format-document';
 import { setActiveDocumentKeyResolver, getActiveDocumentKey, type EditorBridge } from './editor/bridge';
 import { EditorGroup } from './editor/editor-group';
 import { UNTITLED_TITLE, type TabManager } from './tabs/tab-manager';
+import { setupTabDragging } from './tabs/tab-drag';
 import { toDisplayLogLevel } from 'calcpad-frontend';
 import type { UiControl, CalcpadLogLevel, DisplayLogLevel, DraftForm } from 'calcpad-frontend';
 import './editor/vscode-variables.css';
@@ -1871,6 +1872,79 @@ async function bootstrap(): Promise<void> {
     // Toolbar "Run" button.
     appInstance.onRunRequest = () => { void runRefresh(); };
 
+    let persistTransferredTab = async (_tabId: string): Promise<void> => {};
+    const enableTabDragging = () => setupTabDragging(isTauri, {
+        async capture(groupId, tabId) {
+            const group = groups.get(groupId)!;
+            if (group === activeGroup && !await confirmLeaveUiDoc()) return null;
+            if (group.tabs.isLastReference(tabId)
+                && !await confirmDiscardMetadataDraft(metadataDocKeyFor(group, tabId), group.tabs.getTitle(tabId)!)) return null;
+            return group.tabs.exportTab(tabId);
+        },
+        async move(sourceGroupId, tabId, groupId, beforeId) {
+            const source = groups.get(sourceGroupId)!;
+            const target = groups.get(groupId)!;
+            if (source === target) {
+                source.tabs.reorder(tabId, beforeId);
+                return;
+            }
+            if (!await confirmLeaveUiDoc()) return;
+            if (!await confirmDiscardMetadataDraft(metadataDocKeyFor(source, tabId), source.tabs.getTitle(tabId)!)) return;
+            const snapshot = source.tabs.exportTab(tabId);
+            const model = source.tabs.modelForTab(tabId)!;
+            const existing = target.tabs.all.find(tab => target.tabs.modelForTab(tab.id) === model);
+            setActiveGroup(target);
+            const id = existing?.id ?? target.tabs.importTab(snapshot, model);
+            target.tabs.activate(id);
+            target.tabs.reorder(id, beforeId);
+            await persistTransferredTab(id);
+            source.tabs.close(tabId);
+            setActiveGroup(target);
+            target.editor.focus();
+        },
+        async receive(snapshot, groupId, beforeId) {
+            const target = groups.get(groupId);
+            if (!target || !await confirmLeaveUiDoc()) return false;
+            const existing = snapshot.filePath ? target.tabs.findByPath(snapshot.filePath) : null;
+            const documentGroup = snapshot.filePath
+                ? [...groups.values()].find(group => group.tabs.findByPath(snapshot.filePath!))
+                : undefined;
+            const openDocument = documentGroup?.tabs.findByPath(snapshot.filePath!) ?? null;
+            if (openDocument && (documentGroup!.tabs.getContent(openDocument.id) !== snapshot.content
+                || openDocument.dirty !== snapshot.dirty)) {
+                appInstance.appendOutput('warn', `Cannot move ${snapshot.title}: this window already has a different version open.`);
+                appInstance.showOutput();
+                return false;
+            }
+            const scratch = target.tabs.activeTab;
+            const replaceScratch = scratch?.filePath === null && !scratch.dirty
+                && target.tabs.getContent(scratch.id) === ''
+                && !metadataDirty.has(metadataDocKeyFor(target, scratch.id));
+            setActiveGroup(target);
+            const id = existing?.id ?? target.tabs.importTab(snapshot,
+                openDocument ? documentGroup!.tabs.modelForTab(openDocument.id)! : undefined);
+            target.tabs.activate(id);
+            target.tabs.reorder(id, beforeId);
+            await persistTransferredTab(id);
+            if (replaceScratch && scratch.id !== id) target.tabs.close(scratch.id);
+            if (isTauri) (await import('@tauri-apps/api/window')).getCurrentWindow().setFocus();
+            return true;
+        },
+        remove(groupId, tabId, snapshot) {
+            const group = groups.get(groupId);
+            const model = group?.tabs.modelForTab(tabId);
+            if (!model) return;
+            if (model.getVersionId() !== snapshot.version
+                || group!.tabs.getFilePath(tabId) !== snapshot.filePath
+                || group!.tabs.isDirty(tabId) !== snapshot.dirty) {
+                appInstance.appendOutput('warn', `${snapshot.title} changed during the move and was kept in this window.`);
+                appInstance.showOutput();
+                return;
+            }
+            group!.tabs.close(tabId);
+        },
+    });
+
     // Tauri-specific: native menu clicks + file operations
     if (isTauri && tauriBridge) {
         const [
@@ -1948,6 +2022,8 @@ async function bootstrap(): Promise<void> {
                     `Autosave failed for ${title}: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
+
+        persistTransferredTab = writeDraft;
 
         async function deleteDraft(tabId: string): Promise<void> {
             const id = draftIds.get(tabId);
@@ -2925,6 +3001,7 @@ async function bootstrap(): Promise<void> {
             void tryExit();
         });
     }
+    await enableTabDragging();
 }
 
 // Nothing has mounted yet when bootstrap rejects, so an unhandled rejection here

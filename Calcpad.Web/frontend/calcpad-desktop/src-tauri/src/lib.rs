@@ -559,6 +559,149 @@ fn window_labels(app: AppHandle) -> Vec<String> {
     app.webview_windows().into_keys().collect()
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TabDragTarget {
+    window_id: String,
+    x: f64,
+    y: f64,
+}
+
+#[cfg(feature = "window-tests")]
+static TEST_TAB_DRAG_TARGET: Mutex<Option<Option<TabDragTarget>>> = Mutex::new(None);
+
+#[cfg(feature = "window-tests")]
+#[tauri::command]
+fn test_set_tab_drag_target(target: Option<TabDragTarget>) {
+    *TEST_TAB_DRAG_TARGET.lock().unwrap() = Some(target);
+}
+
+#[tauri::command]
+async fn use_system_tab_drag(window: tauri::WebviewWindow) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        window
+            .with_webview(move |platform| {
+                use gtk::prelude::*;
+                let wayland = platform.inner().display().type_().name() == "GdkWaylandDisplay";
+                let _ = sender.send(wayland);
+            })
+            .map_err(|error| error.to_string())?;
+        receiver.await.map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+async fn tab_drag_target(app: AppHandle) -> Result<Option<TabDragTarget>, String> {
+    #[cfg(feature = "window-tests")]
+    if let Some(target) = &*TEST_TAB_DRAG_TARGET.lock().unwrap() {
+        return Ok(target.clone());
+    }
+    let windows: Vec<_> = app.webview_windows().into_values().collect();
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let windows = {
+        let mut windows = windows;
+        let focused = app.state::<FocusedWindow>();
+        let label = focused.0.lock().expect("focused window mutex poisoned");
+        windows.sort_by_key(|window| window.label() != *label);
+        windows
+    };
+
+    #[cfg(windows)]
+    let (cursor, root) = {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT,
+        };
+        let mut point = POINT { x: 0, y: 0 };
+        unsafe {
+            if GetCursorPos(&mut point) == 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            (point, GetAncestor(WindowFromPoint(point), GA_ROOT))
+        }
+    };
+
+    for window in windows {
+        if !window.is_visible().map_err(|e| e.to_string())?
+            || window.is_minimized().map_err(|e| e.to_string())?
+        {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let label = window.label().to_string();
+            window
+                .with_webview(move |platform| {
+                    use gtk::prelude::*;
+                    let view = platform.inner();
+                    let target = (|| {
+                        if !view.is_drawable() {
+                            return None;
+                        }
+                        let pointer = view.display().default_seat().unwrap().pointer().unwrap();
+                        let hit = pointer.window_at_position_double().0?;
+                        let toplevel = view.toplevel().unwrap();
+                        let native = toplevel.window().unwrap();
+                        if hit.effective_toplevel() != native.effective_toplevel() {
+                            return None;
+                        }
+                        let (_, root_x, root_y) = pointer.position_double();
+                        let (_, origin_x, origin_y) = native.origin();
+                        let (offset_x, offset_y) =
+                            view.translate_coordinates(&toplevel, 0, 0).unwrap();
+                        let x = root_x - f64::from(origin_x + offset_x);
+                        let y = root_y - f64::from(origin_y + offset_y);
+                        let allocation = view.allocation();
+                        (x >= 0.0
+                            && y >= 0.0
+                            && x < f64::from(allocation.width())
+                            && y < f64::from(allocation.height()))
+                        .then_some(TabDragTarget {
+                            window_id: label,
+                            x,
+                            y,
+                        })
+                    })();
+                    let _ = sender.send(target);
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(target) = receiver.await.map_err(|error| error.to_string())? {
+                return Ok(Some(target));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            #[cfg(windows)]
+            if window.hwnd().map_err(|e| e.to_string())?.0 != root as _ {
+                continue;
+            }
+            #[cfg(not(windows))]
+            let cursor = window.cursor_position().map_err(|e| e.to_string())?;
+            let origin = window.inner_position().map_err(|e| e.to_string())?;
+            let size = window.inner_size().map_err(|e| e.to_string())?;
+            let x = cursor.x as f64 - origin.x as f64;
+            let y = cursor.y as f64 - origin.y as f64;
+            if x >= 0.0 && y >= 0.0 && x < size.width as f64 && y < size.height as f64 {
+                let scale = window.scale_factor().map_err(|e| e.to_string())?;
+                return Ok(Some(TabDragTarget {
+                    window_id: window.label().to_string(),
+                    x: x / scale,
+                    y: y / scale,
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
 #[tauri::command]
 fn primary_window(state: State<'_, PrimaryWindow>) -> String {
     state
@@ -758,7 +901,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
         .to_path_buf();
 
     let spawn_started = Instant::now();
-    eprintln!("[sidecar-timing] spawning {:?}", exe_path);
+    eprintln!("[sidecar-timing] spawning {exe_path:?}");
     let log_dir = resolve_log_dir(app);
     let mut command = tokio::process::Command::new(&exe_path);
     #[cfg(windows)]
@@ -1091,8 +1234,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
                 let _ = app_for_wait.emit("server-crashed", payload);
                 if let Some(tx) = tx_url.lock().ok().and_then(|mut g| g.take()) {
                     let _ = tx.send(Err(format!(
-                        "sidecar exited before port ready (code {:?})",
-                        exit_code
+                        "sidecar exited before port ready (code {exit_code:?})"
                     )));
                 } else if is_current {
                     // Ran, then died: no spawn caller is left to record it.
@@ -1638,6 +1780,10 @@ pub fn run() {
             set_recent_files,
             confirm_three_way,
             window_labels,
+            tab_drag_target,
+            use_system_tab_drag,
+            #[cfg(feature = "window-tests")]
+            test_set_tab_drag_target,
             primary_window,
             new_window,
         ])

@@ -42,6 +42,7 @@
             <div
               v-if="group.tabs.length > 0"
               class="tab-strip"
+              :data-tab-group="group.id"
               @contextmenu.prevent
             >
               <div class="tab-list" role="tablist" @wheel="onTabListWheel">
@@ -49,6 +50,7 @@
                   v-for="tab in group.tabs"
                   :key="tab.id"
                   class="tab"
+                  :data-tab-id="tab.id"
                   :class="{ active: tab.isActive, dirty: tab.dirty }"
                   role="tab"
                   :aria-selected="tab.isActive"

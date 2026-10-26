@@ -413,6 +413,28 @@ select option {
     color: var(--vscode-tab-hoverForeground, #ffffff);
 }
 
+.tab-dragging {
+    opacity: 0.5;
+}
+
+.dragging-tab,
+.dragging-tab * {
+    cursor: grabbing !important;
+    user-select: none !important;
+}
+
+.tab-drop-marker {
+    position: fixed;
+    width: 2px;
+    background: var(--vscode-focusBorder, #007acc);
+    pointer-events: none;
+    z-index: 10000;
+}
+
+.tab[data-tab-id] {
+    touch-action: none;
+}
+
 .tab.active {
     background: var(--vscode-tab-activeBackground, #1e1e1e);
     color: var(--vscode-tab-activeForeground, #ffffff);
