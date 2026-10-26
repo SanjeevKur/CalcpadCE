@@ -308,8 +308,7 @@ fn draft_write(
         file_path,
         saved_at: unix_millis(),
     };
-    let meta_json =
-        serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
+    let meta_json = serde_json::to_vec_pretty(&meta).map_err(|e| format!("serialize meta: {e}"))?;
     atomic_write(&content_path, content.as_bytes())
         .map_err(|e| format!("write draft content: {e}"))?;
     atomic_write(&meta_path, &meta_json).map_err(|e| format!("write draft meta: {e}"))?;
@@ -359,7 +358,7 @@ fn draft_list() -> Result<Vec<DraftInfo>, String> {
             size,
         });
     }
-    out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    out.sort_by_key(|d| std::cmp::Reverse(d.saved_at));
     Ok(out)
 }
 
@@ -369,8 +368,8 @@ fn draft_read(id: String) -> Result<Option<DraftContent>, String> {
     if !content_path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&content_path)
-        .map_err(|e| format!("read draft content: {e}"))?;
+    let content =
+        std::fs::read_to_string(&content_path).map_err(|e| format!("read draft content: {e}"))?;
     let meta = read_draft_meta(&meta_path).unwrap_or(DraftMeta {
         filename: format!("{id}.cpd"),
         file_path: None,
@@ -422,7 +421,11 @@ fn server_token() -> &'static str {
 
 #[tauri::command]
 fn take_pending_launch_files(state: State<'_, PendingLaunchFiles>) -> Vec<String> {
-    state.0.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+    state
+        .0
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Grants read access to `path` and the directory holding it, which is what worksheets need
@@ -445,7 +448,10 @@ fn allow_file_and_parent(app: &AppHandle, path: &Path) {
 fn allow_document_dir(app: AppHandle, path: String) -> Result<(), String> {
     let path = PathBuf::from(&path);
     if !app.fs_scope().is_allowed(&path) {
-        return Err(format!("outside the current read scope: {}", path.display()));
+        return Err(format!(
+            "outside the current read scope: {}",
+            path.display()
+        ));
     }
     let parent = path
         .parent()
@@ -555,7 +561,11 @@ fn window_labels(app: AppHandle) -> Vec<String> {
 
 #[tauri::command]
 fn primary_window(state: State<'_, PrimaryWindow>) -> String {
-    state.0.lock().expect("primary window mutex poisoned").clone()
+    state
+        .0
+        .lock()
+        .expect("primary window mutex poisoned")
+        .clone()
 }
 
 /// Opens another window in this process — one sidecar, one store, one drafts dir. Cloning
@@ -597,7 +607,10 @@ fn allow_existing_instance_foreground(identifier: &str) {
         AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId,
     };
 
-    let class: Vec<u16> = format!("{identifier}-sic").encode_utf16().chain(Some(0)).collect();
+    let class: Vec<u16> = format!("{identifier}-sic")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     unsafe {
         let window = FindWindowW(class.as_ptr(), std::ptr::null());
         if !window.is_null() {
@@ -730,7 +743,11 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_file(&port_file);
     let port_file_str = port_file.to_string_lossy().into_owned();
 
-    let exe_name = if cfg!(windows) { SIDECAR_EXE_WINDOWS } else { SIDECAR_EXE_UNIX };
+    let exe_name = if cfg!(windows) {
+        SIDECAR_EXE_WINDOWS
+    } else {
+        SIDECAR_EXE_UNIX
+    };
     let exe_path = app
         .path()
         .resolve(exe_name, BaseDirectory::Resource)
@@ -923,76 +940,79 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     // buffer while scanning for Kestrel's "Now listening on:" marker, and both are type-erased to
     // `Box<dyn AsyncRead + Send + Unpin>` since they are different concrete types.
     use tokio::io::AsyncRead;
-    fn spawn_stream_reader(
-        stream: Box<dyn AsyncRead + Send + Unpin>,
-        label: &'static str,
+    type UrlSender = Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>;
+
+    #[derive(Clone)]
+    struct ReaderContext {
         spawn_started: Instant,
-        tx_url: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>>,
+        tx_url: UrlSender,
         app: AppHandle,
         tail: Arc<Mutex<String>>,
         saw_first: Arc<std::sync::atomic::AtomicBool>,
         log_tx: mpsc::Sender<ServerLogLine>,
+    }
+
+    fn spawn_stream_reader(
+        stream: Box<dyn AsyncRead + Send + Unpin>,
+        label: &'static str,
+        ctx: ReaderContext,
     ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if !saw_first.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            eprintln!(
-                                "[sidecar-timing] first stdio byte ({}) after {}ms",
-                                label,
-                                spawn_started.elapsed().as_millis()
-                            );
-                        }
-                        if let Ok(mut t) = tail.lock() {
-                            append_tail(&mut t, &line);
-                            append_tail(&mut t, "\n");
-                        }
-                        // try_send, never send: blocking here is what wedges the sidecar.
-                        let _ = log_tx.try_send(ServerLogLine {
-                            stream: label,
-                            line: line.clone(),
-                        });
-                        if let Some(url) = extract_listening_url(&line) {
-                            let state: State<'_, ServerState> = app.state();
-                            if let Ok(mut g) = state.url.lock() {
-                                *g = Some(url.clone());
-                            }
-                            if let Some(tx) = tx_url.lock().ok().and_then(|mut g| g.take()) {
-                                let _ = tx.send(Ok(url.clone()));
-                            }
-                            let _ = app.emit("server-url", url);
-                        }
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !ctx
+                    .saw_first
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "[sidecar-timing] first stdio byte ({}) after {}ms",
+                        label,
+                        ctx.spawn_started.elapsed().as_millis()
+                    );
+                }
+                if let Ok(mut t) = ctx.tail.lock() {
+                    append_tail(&mut t, &line);
+                    append_tail(&mut t, "\n");
+                }
+                // try_send, never send: blocking here is what wedges the sidecar.
+                let _ = ctx.log_tx.try_send(ServerLogLine {
+                    stream: label,
+                    line: line.clone(),
+                });
+                if let Some(url) = extract_listening_url(&line) {
+                    let state: State<'_, ServerState> = ctx.app.state();
+                    if let Ok(mut g) = state.url.lock() {
+                        *g = Some(url.clone());
                     }
-                    Ok(None) | Err(_) => break,
+                    if let Some(tx) = ctx.tx_url.lock().ok().and_then(|mut g| g.take()) {
+                        let _ = tx.send(Ok(url.clone()));
+                    }
+                    let _ = ctx.app.emit("server-url", url);
                 }
             }
         })
     }
+    let reader_ctx = ReaderContext {
+        spawn_started,
+        tx_url: tx_url.clone(),
+        app: app.clone(),
+        tail: tail.clone(),
+        saw_first: saw_first_output.clone(),
+        log_tx: log_tx.clone(),
+    };
     let mut readers = Vec::new();
     if let Some(s) = stdout {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stdout",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
     if let Some(s) = stderr {
         readers.push(spawn_stream_reader(
             Box::new(s),
             "stderr",
-            spawn_started,
-            tx_url.clone(),
-            app.clone(),
-            tail.clone(),
-            saw_first_output.clone(),
-            log_tx.clone(),
+            reader_ctx.clone(),
         ));
     }
 
@@ -1037,11 +1057,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<String, String> {
                     }
                 })
                 .await;
-                let tail_snapshot = tail
-                    .lock()
-                    .ok()
-                    .map(|t| t.clone())
-                    .unwrap_or_default();
+                let tail_snapshot = tail.lock().ok().map(|t| t.clone()).unwrap_or_default();
                 // The .NET server writes its own crash log via FileLogger, but
                 // duplicate here anyway — if the sidecar died before .NET's
                 // AppDomain.UnhandledException could fire (SIGKILL, StackOverflow,
@@ -1142,9 +1158,9 @@ fn assign_to_job_object(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
 
@@ -1215,11 +1231,23 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         "Export",
         true,
         &[
-            &MenuItem::with_id(app, "export-pdf", "Report PDF...", true, Some("CmdOrCtrl+E"))?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf",
+                "Report PDF...",
+                true,
+                Some("CmdOrCtrl+E"),
+            )?,
             &MenuItem::with_id(app, "export-html", "Report HTML...", true, None::<&str>)?,
             &MenuItem::with_id(app, "export-docx", "Report Word...", true, None::<&str>)?,
             &sep()?,
-            &MenuItem::with_id(app, "export-pdf:preview", "Preview PDF...", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "export-pdf:preview",
+                "Preview PDF...",
+                true,
+                None::<&str>,
+            )?,
             &MenuItem::with_id(
                 app,
                 "export-html:preview",
@@ -1289,7 +1317,11 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
     if recent_items.is_empty() {
         recent_refs.push(&no_recent);
     } else {
-        recent_refs.extend(recent_items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>));
+        recent_refs.extend(
+            recent_items
+                .iter()
+                .map(|i| i as &dyn IsMenuItem<tauri::Wry>),
+        );
         recent_refs.push(&recent_sep);
         recent_refs.push(&clear_recent);
     }
@@ -1386,8 +1418,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         Some("CmdOrCtrl+P"),
     )?;
-    let toggle_word_wrap =
-        MenuItem::with_id(app, "toggle-word-wrap", "Toggle Word Wrap", true, Some("Alt+Z"))?;
+    let toggle_word_wrap = MenuItem::with_id(
+        app,
+        "toggle-word-wrap",
+        "Toggle Word Wrap",
+        true,
+        Some("Alt+Z"),
+    )?;
     let split_editor = MenuItem::with_id(
         app,
         "split-editor",
@@ -1418,8 +1455,13 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
         true,
         None::<&str>,
     )?;
-    let mode_input =
-        MenuItem::with_id(app, "result-mode:ui", "Result Mode: Input", true, None::<&str>)?;
+    let mode_input = MenuItem::with_id(
+        app,
+        "result-mode:ui",
+        "Result Mode: Input",
+        true,
+        None::<&str>,
+    )?;
     let mode_report = MenuItem::with_id(
         app,
         "result-mode:report",
@@ -1467,13 +1509,7 @@ fn build_menu(app: &AppHandle, window_label: &str) -> tauri::Result<Menu<tauri::
                 None::<&str>,
             )?,
             &MenuItem::with_id(app, "stop-server", "Stop Server", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "restart-server",
-                "Restart Server",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "restart-server", "Restart Server", true, None::<&str>)?,
         ],
     )?;
 
@@ -1724,8 +1760,11 @@ pub fn run() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 if let Ok(drafts) = draft_list() {
                     if !drafts.is_empty() {
-                        let _ =
-                            handle_for_drafts.emit_to(MAIN_WINDOW_LABEL, "drafts-recovered", drafts);
+                        let _ = handle_for_drafts.emit_to(
+                            MAIN_WINDOW_LABEL,
+                            "drafts-recovered",
+                            drafts,
+                        );
                     }
                 }
             });
@@ -1737,7 +1776,10 @@ pub fn run() {
             let launch_files = extract_launch_files(std::env::args());
             if !launch_files.is_empty() {
                 let pending: State<'_, PendingLaunchFiles> = app.state();
-                let mut guard = pending.0.lock().expect("pending launch files mutex poisoned");
+                let mut guard = pending
+                    .0
+                    .lock()
+                    .expect("pending launch files mutex poisoned");
                 for path in launch_files {
                     allow_file_and_parent(app.handle(), &path);
                     guard.push(path.to_string_lossy().to_string());

@@ -1700,11 +1700,7 @@ async function bootstrap(): Promise<void> {
         isWebOrDesktop: true,
     };
     const sidebarApp = createApp(CalcpadAppVue, { versionConfig, appVersion });
-    const sidebarInstance = sidebarApp.mount('#vue-sidebar') as {
-        switchTab?: (id: string) => void;
-        switchView?: (id: string) => void;
-        focusInsertSearch: () => Promise<void>;
-    };
+    const sidebarInstance = sidebarApp.mount('#vue-sidebar') as InstanceType<typeof CalcpadAppVue>;
 
     window.addEventListener('keydown', (event) => {
         if (event.key.toLowerCase() === 'i' && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
