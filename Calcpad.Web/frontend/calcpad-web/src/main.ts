@@ -1043,6 +1043,7 @@ async function bootstrap(): Promise<void> {
         group.tabs.onTabsChanged((snapshots) => {
             appInstance.setTabs(group.id, snapshots);
             if (group === activeGroup) refreshWindowTitle();
+            syncOpenFiles();
         });
 
         // On tab switch within this group, re-emit markers + re-lint + repaint.
@@ -1137,6 +1138,7 @@ async function bootstrap(): Promise<void> {
         if (activeGroup === group && other) setActiveGroup(other);
         groups.delete(groupId);
         group.dispose();
+        syncOpenFiles();
         appInstance.removeGroup(groupId);
         other?.editor.focus();
     }
@@ -1233,6 +1235,28 @@ async function bootstrap(): Promise<void> {
         },
     });
 
+    function syncOpenFiles(): void {
+        const paths = [...new Set([...groups.values()].flatMap(g =>
+            g.tabs.all.flatMap(t => t.filePath ? [t.filePath] : [])))];
+        void invokeTauri?.('set_open_files', { paths });
+    }
+
+    function activateOpenFile(path: string, position?: monaco.IPosition | null): boolean {
+        for (const group of [activeGroup, ...[...groups.values()].filter(g => g !== activeGroup)]) {
+            const existing = group.tabs.findByPath(path);
+            if (!existing) continue;
+            if (group !== activeGroup) setActiveGroup(group);
+            group.tabs.activate(existing.id);
+            if (position) {
+                group.editor.setPosition(position);
+                group.editor.revealPositionInCenter(position);
+            }
+            group.editor.focus();
+            return true;
+        }
+        return false;
+    }
+
     if (tauriBridge) {
         const bridge = tauriBridge;
         // Shared by both openers below — the definition-provider's Ctrl+click/F12
@@ -1243,19 +1267,15 @@ async function bootstrap(): Promise<void> {
             selectionOrPosition?: monaco.IRange | monaco.IPosition,
         ): Promise<void> => {
             try {
-                const existing = tabs.findByPath(absPath);
-                if (existing) {
-                    tabs.activate(existing.id);
-                } else {
-                    tabs.openFile(absPath, await bridge.readFile(absPath));
-                }
-                if (selectionOrPosition) {
-                    const pos = 'startLineNumber' in selectionOrPosition
+                const position = selectionOrPosition
+                    ? 'startLineNumber' in selectionOrPosition
                         ? { lineNumber: selectionOrPosition.startLineNumber, column: selectionOrPosition.startColumn }
-                        : { lineNumber: selectionOrPosition.lineNumber, column: selectionOrPosition.column };
-                    editor.setPosition(pos);
-                    editor.revealPositionInCenter(pos);
-                }
+                        : { lineNumber: selectionOrPosition.lineNumber, column: selectionOrPosition.column }
+                    : null;
+                if (activateOpenFile(absPath, position)) return;
+                if (await invokeTauri!<boolean>('navigate_to_open_file', { path: absPath, position })) return;
+                tabs.openFile(absPath, await bridge.readFile(absPath));
+                activateOpenFile(absPath, position);
             } catch (err) {
                 console.warn(`[references] failed to open include ${absPath}: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -1968,6 +1988,10 @@ async function bootstrap(): Promise<void> {
         // The seeded group was wired before this branch ran, so kick the first native title.
         setNativeTitle = (title: string) => { void getCurrentWindow().setTitle(title); };
         refreshWindowTitle();
+        await listenHere<{ path: string; position: monaco.IPosition | null }>('navigate-to-file', evt => {
+            activateOpenFile(evt.payload.path, evt.payload.position);
+        });
+        syncOpenFiles();
         // Route Ctrl+Shift+V "Paste as Comment" through the same Tauri-native
         // clipboard as the rest of the app (WebKitGTK workaround).
         editorBridge.readClipboardText = () => tauriClipboard.readText();

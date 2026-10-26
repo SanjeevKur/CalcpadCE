@@ -54,6 +54,22 @@ impl Default for FocusedWindow {
 
 struct PrimaryWindow(Mutex<String>);
 
+#[derive(Default)]
+struct OpenFiles(Mutex<HashMap<String, Vec<String>>>);
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditorPosition {
+    line_number: u32,
+    column: u32,
+}
+
+#[derive(Clone, Serialize)]
+struct FileNavigation {
+    path: String,
+    position: Option<EditorPosition>,
+}
+
 impl Default for PrimaryWindow {
     fn default() -> Self {
         Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
@@ -709,6 +725,66 @@ fn primary_window(state: State<'_, PrimaryWindow>) -> String {
         .lock()
         .expect("primary window mutex poisoned")
         .clone()
+}
+
+#[tauri::command]
+fn set_open_files(window: tauri::WebviewWindow, state: State<'_, OpenFiles>, paths: Vec<String>) {
+    state
+        .0
+        .lock()
+        .expect("open files mutex poisoned")
+        .insert(window.label().to_string(), paths);
+}
+
+fn file_path_key(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.replace('\\', "/").to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+#[tauri::command]
+fn navigate_to_open_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, OpenFiles>,
+    path: String,
+    position: Option<EditorPosition>,
+) -> Result<bool, String> {
+    let key = file_path_key(&path);
+    let target = state
+        .0
+        .lock()
+        .expect("open files mutex poisoned")
+        .iter()
+        .filter_map(|(label, paths)| {
+            paths
+                .iter()
+                .find(|path| file_path_key(path) == key)
+                .map(|path| (label.clone(), path.clone()))
+        })
+        .min_by_key(|(label, _)| (label != window.label(), label.clone()));
+    let Some((label, path)) = target else {
+        return Ok(false);
+    };
+    let target = app
+        .get_webview_window(&label)
+        .expect("open file window exists");
+    target
+        .emit_to(
+            &label,
+            "navigate-to-file",
+            FileNavigation { path, position },
+        )
+        .map_err(|e| e.to_string())?;
+    target.unminimize().map_err(|e| e.to_string())?;
+    target.set_focus().map_err(|e| e.to_string())?;
+    target.as_ref().set_focus().map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Opens another window in this process — one sidecar, one store, one drafts dir. Cloning
@@ -1759,6 +1835,7 @@ pub fn run() {
         .manage(PendingLaunchFiles::default())
         .manage(FocusedWindow::default())
         .manage(PrimaryWindow::default())
+        .manage(OpenFiles::default())
         .manage(MenuState::default())
         .menu(|app| build_menu(app, MAIN_WINDOW_LABEL))
         .invoke_handler(tauri::generate_handler![
@@ -1785,6 +1862,8 @@ pub fn run() {
             #[cfg(feature = "window-tests")]
             test_set_tab_drag_target,
             primary_window,
+            set_open_files,
+            navigate_to_open_file,
             new_window,
         ])
         .on_window_event(|window, event| match event {
@@ -1808,6 +1887,12 @@ pub fn run() {
                     .expect("focused window mutex poisoned") = window.label().to_string();
             }
             tauri::WindowEvent::Destroyed => {
+                window
+                    .state::<OpenFiles>()
+                    .0
+                    .lock()
+                    .expect("open files mutex poisoned")
+                    .remove(window.label());
                 window
                     .state::<MenuState>()
                     .source_result_modes
