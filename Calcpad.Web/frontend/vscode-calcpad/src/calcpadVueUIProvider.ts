@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { parseHeadings, DEFAULT_PDF_SETTINGS, extractPlotsFromHtml, buildZip, serializeMetadataComment, serializeSettingsDirective, hasMetadataContent, computeMetadataBlock, buildSourceDefinitionResolver, findUiDirectiveBlock, serializeUiDirective, DEFAULT_PREVIEW_SIZE_MB, DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT, coerceWriteMode, coerceLogLevel, stripCpdSnippetWrapper, readFileInfo, planFileInfoEdit, sanitizeFileInfoPatch } from 'calcpad-frontend';
-import type { ParseMode, CalcpadError, ExtractedPlot, MetadataCommentBlock, MetadataCommentData, MetadataLayout, SettingsValues, UiDirectiveData, UiControl } from 'calcpad-frontend';
+import { parseHeadings, DEFAULT_PDF_SETTINGS, extractPlotsFromHtml, buildZip, serializeMetadataComment, serializeSettingsDirective, hasMetadataContent, computeMetadataBlock, buildSourceDefinitionResolver, findUiDirectiveBlock, serializeUiDirective, DEFAULT_PREVIEW_SIZE_MB, DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT, coerceWriteMode, coerceLogLevel, stripCpdSnippetWrapper, readFileInfo, planFileInfoEdit, sanitizeFileInfoPatch, readUiOverrides, planMetadataFooter, toRangeEdits } from 'calcpad-frontend';
+import type { ParseMode, CalcpadError, ExtractedPlot, MetadataCommentBlock, MetadataCommentData, MetadataLayout, SettingsValues, UiDirectiveData, UiControl, LineEdit } from 'calcpad-frontend';
 import { CalcpadSettingsManager } from './calcpadSettings';
 import { CalcpadInsertManager } from './calcpadInsertManager';
 import { VSCodeLogger } from './adapters';
@@ -36,8 +36,7 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
     public resolveUiControls?: () => Promise<UiControl[] | null>;
     /** Entered #UI values the panel rewrote, so the extension's in-memory ones follow. */
     public onUiOverridesEdited?: (documentUri: string, overrides: Record<string, string>) => void;
-    public onShowFileInfoLineChanged?: () => void;
-    /** The compiled worksheet being worked in, which has no text editor for the Info tab to read. */
+    /** The compiled worksheet being worked in, which has no text editor for the Properties tab to read. */
     public getCompiledSource?: () => { uri: vscode.Uri; text: string } | undefined;
     public updateCompiledFileInfo?: (uri: vscode.Uri, patch: unknown) => void;
     /** Saves a compiled worksheet with unsaved changes; false when it couldn't be saved. */
@@ -411,12 +410,16 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
                     await this._handleUpdateMetadata(data);
                     break;
 
-                case 'getFileInfo':
-                    this.refreshFileInfo();
+                case 'getDocumentMetadata':
+                    this.refreshDocumentMetadata();
                     break;
 
                 case 'updateFileInfo':
                     await this._handleUpdateFileInfo(data.patch);
+                    break;
+
+                case 'updateUiOverrides':
+                    await this._handleUpdateUiOverrides(data.overrides);
                     break;
 
                 case 'markFileReviewed':
@@ -425,11 +428,6 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
 
                 case 'updateUserName':
                     this._settingsManager.setExtra('userName', String(data.value ?? '').trim());
-                    break;
-
-                case 'updateShowFileInfoLine':
-                    this._settingsManager.setExtra('showFileInfoLine', !!data.enabled);
-                    this.onShowFileInfoLineChanged?.();
                     break;
 
                 case 'getUiControls':
@@ -533,7 +531,6 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
             maxPreviewConsoleMessages: sm.getExtraNumber(
                 'maxPreviewConsoleMessages', DEFAULT_CONSOLE_MESSAGES_PER_DOCUMENT),
             userName: sm.getExtra('userName', ''),
-            showFileInfoLine: sm.getExtraBool('showFileInfoLine', false),
             activeConfig: sm.getActivePresetName(),
             availableConfigs: await sm.listPresets(),
         };
@@ -648,14 +645,15 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({ type: 'metadataContext', block });
     }
 
-    /** Push the source editor's file info to the panel's Info tab. */
-    public refreshFileInfo() {
+    /** Push the source editor's file info and saved #UI values to the Properties tab. */
+    public refreshDocumentMetadata() {
         const compiled = this.getCompiledSource?.();
         const document = compiled ? undefined : this._calcpadSourceEditor()?.document;
         const text = compiled?.text ?? document?.getText();
         this._view?.webview.postMessage({
-            type: 'fileInfo',
+            type: 'documentMetadata',
             info: text !== undefined ? readFileInfo(text.split(/\r?\n/)) : null,
+            uiOverrides: text !== undefined ? readUiOverrides(text) ?? {} : {},
             hasDocument: text !== undefined,
             docKey: (compiled?.uri ?? document?.uri)?.toString() ?? '',
         });
@@ -668,12 +666,33 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
             : undefined;
     }
 
-    /** Applies the Info tab's edit to the comment it read; a document without one has nothing to edit yet. */
+    private async _applyFooterEdits(editor: vscode.TextEditor, edits: LineEdit[]): Promise<void> {
+        if (!edits.length) return;
+        const document = editor.document;
+        const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+        const ranges = toRangeEdits(edits, document.lineCount, i => document.lineAt(i).text.length, eol);
+        await editor.edit(editBuilder => {
+            for (const r of ranges)
+                editBuilder.replace(new vscode.Range(r.startLine, r.startCharacter, r.endLine, r.endCharacter), r.text);
+        });
+    }
+
+    /** Writes the Properties tab's saved #UI values into the footer, and hands them to the in-memory store. */
+    private async _handleUpdateUiOverrides(raw: unknown): Promise<void> {
+        const editor = this.getCompiledSource?.() ? undefined : this._calcpadSourceEditor();
+        if (!editor || !raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+        const overrides = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v)]));
+        await this._applyFooterEdits(editor, planMetadataFooter(editor.document.getText().split(/\r?\n/), { uiOverrides: overrides }));
+        this.onUiOverridesEdited?.(editor.document.uri.toString(), overrides);
+        this.refreshDocumentMetadata();
+    }
+
+    /** Applies the Properties tab's file-info edit; a document without one has nothing to edit yet. */
     private async _handleUpdateFileInfo(patch: unknown): Promise<void> {
         const compiled = this.getCompiledSource?.();
         if (compiled) {
             this.updateCompiledFileInfo?.(compiled.uri, patch);
-            this.refreshFileInfo();
+            this.refreshDocumentMetadata();
             return;
         }
         const editor = this._calcpadSourceEditor();
@@ -683,11 +702,8 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
         const current = readFileInfo(lines);
         if (!current) return;
 
-        const edit = planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) });
-        await editor.edit(editBuilder => {
-            editBuilder.replace(document.lineAt(edit.line).range.with({ end: document.lineAt(edit.endLine).range.end }), edit.text);
-        });
-        this.refreshFileInfo();
+        await this._applyFooterEdits(editor, planFileInfoEdit(lines, { ...current, ...sanitizeFileInfoPatch(patch) }));
+        this.refreshDocumentMetadata();
     }
 
     /**
@@ -704,7 +720,7 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
             if (!await this.saveCompiled?.(compiled.uri)) return;
             this.updateCompiledFileInfo?.(compiled.uri, review());
             await this.saveCompiled?.(compiled.uri);
-            this.refreshFileInfo();
+            this.refreshDocumentMetadata();
             return;
         }
 
@@ -713,7 +729,7 @@ export class CalcpadVueUIProvider implements vscode.WebviewViewProvider {
         if (document.isDirty && !await document.save()) return;
         await this._handleUpdateFileInfo(review());
         await document.save();
-        this.refreshFileInfo();
+        this.refreshDocumentMetadata();
     }
 
     /** Tell the panel to drop a document's unapplied Properties form. */

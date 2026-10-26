@@ -199,23 +199,23 @@
         v-else-if="pane.activeTab === 'metadata'"
         :block="metadataBlock"
         :ui-controls="uiControls"
-        @apply="handleApplyMetadata"
-        @go-to-line="handleGoToLine"
-        @refresh-ui-controls="handleRefreshUiControls"
-        @draft-dirty="handleMetadataDraftDirty"
-      />
-      <CalcpadInfoTab
-        v-else-if="pane.activeTab === 'info'"
-        :info="fileInfo"
+        :file-info="fileInfo"
+        :saved-ui-overrides="savedUiOverrides"
         :has-document="fileInfoHasDocument"
         :doc-key="fileInfoDocKey"
         :user-name="userName"
-        :show-line="showFileInfoLine"
-        @update="handleUpdateFileInfo"
+        :source-unavailable="inputMode"
+        :source-unavailable-note="INPUT_MODE_NOTE"
+        @apply="handleApplyMetadata"
+        @go-to-line="handleGoToLine"
+        @refresh-ui-controls="handleRefreshUiControls"
+        @draft-dirty="handleDraftDirty($event, 'properties')"
+        @update-file-info="handleUpdateFileInfo"
         @mark-reviewed="postMessage({ type: 'markFileReviewed' })"
-        @update-show-line="handleUpdateShowFileInfoLine"
         @open-settings="openSetting(pane, 'user', 'userName')"
-        @draft-dirty="handleInfoDraftDirty"
+        @file-info-draft-dirty="handleDraftDirty($event, 'info')"
+        @update-ui-overrides="handleUpdateUiOverrides"
+        @ui-overrides-draft-dirty="handleDraftDirty($event, 'uiOverrides')"
       />
     </div>
     </div>
@@ -236,7 +236,6 @@ import CalcpadExportTab from './CalcpadExportTab.vue'
 import CalcpadFilesTab from './CalcpadFilesTab.vue'
 import CalcpadErrorsTab from './CalcpadErrorsTab.vue'
 import CalcpadMetadataTab from './CalcpadMetadataTab.vue'
-import CalcpadInfoTab from './CalcpadInfoTab.vue'
 import { postMessage } from '../services/messaging'
 import type { FileInfo } from '../../services/file-info'
 import type { MetadataCommentBlock, MetadataCommentData, SettingsValues } from '../../text/metadata-comment'
@@ -329,8 +328,8 @@ const prettifyIndentSize = ref(4)
 const prettifyTrimTrailing = ref(true)
 
 const userName = ref('')
-const showFileInfoLine = ref(false)
 const fileInfo = ref<FileInfo | null>(null)
+const savedUiOverrides = ref<Record<string, string>>({})
 const fileInfoHasDocument = ref(false)
 const fileInfoDocKey = ref('')
 
@@ -352,7 +351,6 @@ const tabs = computed<Tab[]>(() => {
   // in the VS Code webview and the desktop app (both host a real editor).
   // File info is stamped on save, which only those two hosts have.
   if (props.versionConfig.isVSCode || props.versionConfig.isDesktop) {
-    base.unshift({ id: 'info', label: 'Info' })
     base.push({ id: 'metadata', label: 'Properties' })
   }
   return base
@@ -375,10 +373,10 @@ panes.value[0].activeTab = storedStartTab()
  * Input mode fills a worksheet in rather than editing it — the host hides the editor,
  * and for a compiled worksheet there is no source behind it at all. The tabs that act
  * on source have nothing to act on there, so their content is shown inert: TOC, Export,
- * Settings and Info still work, since a filled-in worksheet is still navigated, exported
- * and reviewed.
+ * Settings and Properties' File Info still work, since a filled-in worksheet is still
+ * navigated, exported and reviewed.
  */
-const SOURCE_TABS = ['insert', 'variables', 'formatting', 'errors', 'metadata']
+const SOURCE_TABS = ['insert', 'variables', 'formatting', 'errors']
 const INPUT_MODE_NOTE = 'Unavailable in input mode — this acts on the document source, which the input form does not edit.'
 const inputMode = ref(false)
 const tabUnavailable = (tabId: string) => inputMode.value && SOURCE_TABS.includes(tabId)
@@ -495,13 +493,9 @@ const activateTab = (pane: Pane, tabId: string) => {
     postMessage({ type: 'getPrettifySettings' })
   }
 
-  // Refresh the metadata comment at the cursor when opening the Metadata tab
   if (tabId === 'metadata') {
     postMessage({ type: 'getMetadataContext' })
-  }
-
-  if (tabId === 'info') {
-    postMessage({ type: 'getFileInfo' })
+    postMessage({ type: 'getDocumentMetadata' })
   }
 
   // Fetch the current document's plots the first time the Export tab is opened.
@@ -727,13 +721,12 @@ const handleUpdateUserName = (value: string) => {
   postMessage({ type: 'updateUserName', value })
 }
 
-const handleUpdateShowFileInfoLine = (enabled: boolean) => {
-  showFileInfoLine.value = enabled
-  postMessage({ type: 'updateShowFileInfoLine', enabled })
-}
-
 const handleUpdateFileInfo = (patch: Partial<FileInfo>) => {
   postMessage({ type: 'updateFileInfo', patch })
+}
+
+const handleUpdateUiOverrides = (overrides: Record<string, string>) => {
+  postMessage({ type: 'updateUiOverrides', overrides })
 }
 
 const handleUpdatePdfSettings = (settings: PdfSettings) => {
@@ -825,12 +818,8 @@ const handleApplyMetadata = (payload: { data: MetadataCommentData; settings: Set
   })
 }
 
-const handleMetadataDraftDirty = (payload: { docKey: string; dirty: boolean }) => {
-  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form: 'properties' })
-}
-
-const handleInfoDraftDirty = (payload: { docKey: string; dirty: boolean }) => {
-  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form: 'info' })
+const handleDraftDirty = (payload: { docKey: string; dirty: boolean }, form: 'properties' | 'info' | 'uiOverrides') => {
+  postMessage({ type: 'metadataDraftDirty', docKey: payload.docKey, dirty: payload.dirty, form })
 }
 
 // Message handler
@@ -873,10 +862,10 @@ const handleMessage = (event: MessageEvent) => {
       completionDelayMs.value = message.completionDelayMs
       if (Array.isArray(message.availableFonts)) availableFonts.value = message.availableFonts
       if (typeof message.userName === 'string') userName.value = message.userName
-      if (typeof message.showFileInfoLine === 'boolean') showFileInfoLine.value = message.showFileInfoLine
       break
-    case 'fileInfo':
+    case 'documentMetadata':
       fileInfo.value = message.info ?? null
+      savedUiOverrides.value = message.uiOverrides && typeof message.uiOverrides === 'object' ? message.uiOverrides : {}
       fileInfoHasDocument.value = !!message.hasDocument
       fileInfoDocKey.value = String(message.docKey ?? '')
       break
