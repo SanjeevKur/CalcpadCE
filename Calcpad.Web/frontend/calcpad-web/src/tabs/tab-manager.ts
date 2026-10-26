@@ -15,6 +15,15 @@ export interface TabSnapshot extends TabState {
     isActive: boolean;
 }
 
+export interface TabTransfer {
+    title: string;
+    filePath: string | null;
+    content: string;
+    dirty: boolean;
+    viewState: monaco.editor.ICodeEditorViewState | null;
+    version: number;
+}
+
 /**
  * Per-model document metadata (path, title, save baseline). Lives outside any
  * single TabManager because a model can be shared by tabs in more than one
@@ -181,6 +190,41 @@ export class TabManager {
     }
 
     // ---- Mutation ----
+
+    reorder(id: string, beforeId: string | null): void {
+        if (id === beforeId) return;
+        const index = this.tabs.findIndex(tab => tab.id === id);
+        const [tab] = this.tabs.splice(index, 1);
+        const destination = beforeId === null ? this.tabs.length : this.tabs.findIndex(t => t.id === beforeId);
+        this.tabs.splice(destination, 0, tab);
+        this.emit();
+    }
+
+    exportTab(id: string): TabTransfer {
+        const tab = this.tabs.find(t => t.id === id)!;
+        return {
+            title: docFor(tab.model).title,
+            filePath: docFor(tab.model).filePath,
+            content: tab.model.getValue(),
+            dirty: tab.dirty,
+            viewState: id === this._activeId ? this.editor.saveViewState() : tab.viewState,
+            version: tab.model.getVersionId(),
+        };
+    }
+
+    importTab(transfer: TabTransfer, model?: monaco.editor.ITextModel): string {
+        const id = model ? this.openLinked(model) : this.createTab(transfer).id;
+        const tab = this.tabs.find(t => t.id === id)!;
+        tab.viewState = transfer.viewState;
+        if (!model && transfer.dirty) {
+            docFor(tab.model).savedVersionId = -1;
+            tab.dirty = true;
+        }
+        this.activate(id);
+        if (tab.viewState) this.editor.restoreViewState(tab.viewState);
+        this.emit();
+        return id;
+    }
 
     /**
      * Create a new untitled tab with the given content (default empty) and activate it,

@@ -4,7 +4,144 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { TestApp, invoke, until } from './test-app.mjs';
 
+async function dragTab(app, source, tabId, target, beforeId, {cancel = false, outside = false} = {}) {
+    await app.setGeometry(source, {width: 1400, height: 700}, {x: 10, y: 10});
+    if (target !== source) await app.setGeometry(target, {width: 1400, height: 700}, {x: 10, y: 10});
+    const point = await app.evaluate(source, `(() => {
+        const rect = document.querySelector('[data-tab-id="${tabId}"]').getBoundingClientRect();
+        return {x: rect.left + 20, y: rect.top + rect.height / 2};
+    })()`);
+    const destination = outside ? null : await app.evaluate(target, `(() => {
+        const element = ${beforeId ? `document.querySelector('[data-tab-id="${beforeId}"]')` : "document.querySelector('.tab-new')"};
+        const rect = element.getBoundingClientRect();
+        return {windowId: window.__TAURI_INTERNALS__.metadata.currentWindow.label,
+            x: rect.left + 12, y: rect.top + rect.height / 2};
+    })()`);
+    // Native hit testing is simulated; pointer capture, DOM events and inter-window delivery are real.
+    await app.evaluate(source, invoke('test_set_tab_drag_target', {target: destination}));
+    await app.cdp(source, 'Input.dispatchMouseEvent', {type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1});
+    await app.cdp(source, 'Input.dispatchMouseEvent', {type: 'mouseMoved', x: point.x + 10, y: point.y, button: 'left', buttons: 1});
+    if (cancel) await app.cdp(source, 'Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
+    await app.cdp(source, 'Input.dispatchMouseEvent', {type: 'mouseReleased', x: point.x + 10, y: point.y, button: 'left', buttons: 0, clickCount: 1});
+}
+
 describe('desktop windows', {skip: process.platform !== 'win32', concurrency: false}, () => {
+    test('document tabs reorder without losing undo history and cancelled drags leave them in place', {timeout: 90000}, async t => {
+        const app = new TestApp();
+        t.after(() => app.dispose());
+        const main = await app.start();
+        const ids = await app.evaluate(main, `(() => {
+            const tabs = window.calcpadTabs;
+            const scratch = tabs.activeId;
+            const ids = ['A', 'B', 'C'].map(title => tabs.newUntitled(title + ' = 1', title));
+            tabs.close(scratch);
+            tabs.activate(ids[0]);
+            window.calcpadActiveEditor.executeEdits('test', [{range: {startLineNumber: 1, startColumn: 6, endLineNumber: 1, endColumn: 6}, text: '2'}]);
+            return ids;
+        })()`);
+        await dragTab(app, main, ids[0], main, ids[2]);
+        await until(async () => (await app.evaluate(main, 'window.calcpadTabs.all.map(tab => tab.title).join()')) === 'B,A,C', 'tabs reordered');
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.activeId'), ids[0]);
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.isDirty()'), true);
+        await app.evaluate(main, 'window.calcpadActiveEditor.getModel().undo()');
+        assert.equal(await app.evaluate(main, 'window.calcpadActiveEditor.getValue()'), 'A = 1');
+        assert.equal(await app.evaluate(main, 'window.calcpadTabs.isDirty()'), false);
+
+        await dragTab(app, main, ids[0], main, ids[1], {cancel: true});
+        await dragTab(app, main, ids[0], main, null, {outside: true});
+        assert.deepEqual(await app.evaluate(main, 'window.calcpadTabs.all.map(tab => tab.title)'), ['B', 'A', 'C']);
+        await dragTab(app, main, ids[1], main, null);
+        await until(async () => (await app.evaluate(main, 'window.calcpadTabs.all.map(tab => tab.title).join()')) === 'A,C,B', 'tab moved to end');
+        await app.stop(main, 'main');
+    });
+
+    test('tabs move between windows with unsaved content, paths, cursor positions and recovery drafts', {timeout: 90000}, async t => {
+        const app = new TestApp();
+        t.after(() => app.dispose());
+        const main = await app.start();
+        const second = await app.newWindow(main);
+        const original = await app.evaluate(main, `(() => {
+            window.testPrompts = 0;
+            window.calcpadBridge.confirmThreeWay = async () => { window.testPrompts++; return 'cancel'; };
+            window.calcpadActiveEditor.setValue('a = 1\\nb = 2');
+            window.calcpadActiveEditor.setPosition({lineNumber: 2, column: 3});
+            return window.calcpadTabs.activeTab;
+        })()`);
+        await dragTab(app, main, original.id, second.page, null);
+        await until(async () => await app.evaluate(second.page, 'window.calcpadActiveEditor.getValue()') === 'a = 1\nb = 2', 'unsaved document received');
+        await until(async () => !(await app.evaluate(main, 'window.calcpadTabs.all')).some(tab => tab.id === original.id), 'source tab removed');
+        assert.equal(await app.evaluate(second.page, 'window.calcpadTabs.count'), 1);
+        assert.equal(await app.evaluate(second.page, 'window.calcpadTabs.isDirty()'), true);
+        assert.equal(await app.evaluate(second.page, 'window.calcpadTabs.activeTab.title'), original.title);
+        assert.deepEqual(await app.evaluate(second.page, 'window.calcpadActiveEditor.getPosition()'), {lineNumber: 2, column: 3});
+        assert.equal(await app.evaluate(main, 'window.testPrompts'), 0);
+        await until(() => app.evaluate(second.page, `(async () => (await ${invoke('draft_list')}).some(draft => draft.filePath === null))()`), 'destination autosave');
+
+        const file = app.fixture('dragged worksheet.cpd', 'saved = 1');
+        await app.focus(main, 'main');
+        await app.relaunch([file]);
+        await app.fileOpen(main, file);
+        const fileTab = await app.evaluate(main, 'window.calcpadTabs.activeTab');
+        await dragTab(app, main, fileTab.id, second.page, null);
+        await app.fileOpen(second.page, file);
+        await until(async () => !(await app.evaluate(main, 'window.calcpadTabs.all')).some(tab => tab.filePath === file), 'saved source removed');
+        assert.equal(await app.evaluate(second.page, 'window.calcpadTabs.isDirty()'), false);
+        assert.equal(readFileSync(file, 'utf8'), 'saved = 1');
+        await app.evaluate(second.page, `window.calcpadBridge.confirmThreeWay = async () => 'no';`);
+        await app.closeAndWait(main, 'main');
+        await app.stop(second.page, second.label);
+    });
+
+    test('tabs move between split groups while retaining their document model', {timeout: 90000}, async t => {
+        const app = new TestApp();
+        t.after(() => app.dispose());
+        const main = await app.start();
+        const original = await app.evaluate(main, 'window.calcpadTabs.activeId');
+        await app.evaluate(main, invoke('plugin:event|emit_to', {
+            target: {kind: 'WebviewWindow', label: 'main'}, event: 'menu-click', payload: {id: 'split-editor'},
+        }));
+        const linked = await until(() => app.evaluate(main,
+            `document.querySelector('[data-tab-group="g1"] [data-tab-id]')?.dataset.tabId`), 'split group ready');
+        await app.evaluate(main, `document.querySelector('[data-tab-id="${original}"]').dispatchEvent(new MouseEvent('mousedown', {button: 0, bubbles: true}))`);
+        await until(async () => await app.evaluate(main, 'window.calcpadTabs.activeId') === original, 'source group active');
+        const moved = await app.evaluate(main, `(() => {
+            const id = window.calcpadTabs.newUntitled('', 'Moved');
+            window.calcpadActiveEditor.executeEdits('test', [{range: {startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1}, text: 'moved = 1'}]);
+            window.testMovedModel = window.calcpadActiveEditor.getModel();
+            return id;
+        })()`);
+        await dragTab(app, main, moved, main, linked);
+        await until(() => app.evaluate(main, `document.querySelector('[data-tab-group="g1"] .tab-title')?.textContent === 'Moved'`), 'tab moved to split group');
+        assert.equal(await app.evaluate(main, 'window.calcpadActiveEditor.getModel() === window.testMovedModel'), true);
+        assert.equal(await app.evaluate(main, `document.querySelector('[data-tab-id="${moved}"]') === null`), true);
+        await app.evaluate(main, 'window.calcpadActiveEditor.getModel().undo()');
+        assert.equal(await app.evaluate(main, 'window.calcpadActiveEditor.getValue()'), '');
+        await app.stop(main, 'main');
+    });
+
+    test('dropping a tab onto a different open version preserves both documents', {timeout: 90000}, async t => {
+        const app = new TestApp();
+        t.after(() => app.dispose());
+        const main = await app.start();
+        const second = await app.newWindow(main);
+        const file = app.fixture('conflicting worksheet.cpd', 'saved = 1');
+        for (const [page, label] of [[main, 'main'], [second.page, second.label]]) {
+            await app.focus(page, label);
+            await app.relaunch([file]);
+            await app.fileOpen(page, file);
+        }
+        await app.evaluate(main, "window.calcpadActiveEditor.setValue('source = 2')");
+        await app.evaluate(second.page, "window.calcpadActiveEditor.setValue('destination = 3')");
+        const tabId = await app.evaluate(main, 'window.calcpadTabs.activeId');
+        await dragTab(app, main, tabId, second.page, null);
+        await until(() => app.evaluate(second.page, "document.body.textContent.includes('already has a different version open')"), 'conflict reported');
+        assert.equal(await app.evaluate(main, 'window.calcpadActiveEditor.getValue()'), 'source = 2');
+        assert.equal(await app.evaluate(second.page, 'window.calcpadActiveEditor.getValue()'), 'destination = 3');
+        for (const page of [main, second.page]) await app.evaluate(page, "window.calcpadBridge.confirmThreeWay = async () => 'no'");
+        await app.closeAndWait(main, 'main');
+        await app.stop(second.page, second.label);
+    });
+
     test('new windows focus their webview when opened from an existing window or a repeat launch', {timeout: 90000}, async t => {
         const app = new TestApp();
         t.after(() => app.dispose());
