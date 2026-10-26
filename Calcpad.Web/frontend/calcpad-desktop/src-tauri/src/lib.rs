@@ -561,7 +561,11 @@ fn window_labels(app: AppHandle) -> Vec<String> {
 
 #[tauri::command]
 fn primary_window(state: State<'_, PrimaryWindow>) -> String {
-    state.0.lock().expect("primary window mutex poisoned").clone()
+    state
+        .0
+        .lock()
+        .expect("primary window mutex poisoned")
+        .clone()
 }
 
 /// Opens another window in this process — one sidecar, one store, one drafts dir. Cloning
@@ -603,7 +607,10 @@ fn allow_existing_instance_foreground(identifier: &str) {
         AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId,
     };
 
-    let class: Vec<u16> = format!("{identifier}-sic").encode_utf16().chain(Some(0)).collect();
+    let class: Vec<u16> = format!("{identifier}-sic")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     unsafe {
         let window = FindWindowW(class.as_ptr(), std::ptr::null());
         if !window.is_null() {
